@@ -32,7 +32,6 @@ public class SettingsManager
             XmlAttributes ignoreAttrs = new XmlAttributes();
             ignoreAttrs.XmlIgnore = true;
             overrides.Add(typeof(UserSettings), "Uuid", ignoreAttrs);
-            overrides.Add(typeof(UserSettings), "IsStoreVersion", ignoreAttrs);
             _exportSerializer = new XmlSerializer(typeof(UserSettings), overrides);
         }
         return _exportSerializer;
@@ -82,7 +81,6 @@ public class SettingsManager
                 if (isImport && _current != null)
                 {
                     loadedSettings.Uuid = _current.Uuid;
-                    loadedSettings.IsStoreVersion = _current.IsStoreVersion;
                 }
 
                 _current = loadedSettings;

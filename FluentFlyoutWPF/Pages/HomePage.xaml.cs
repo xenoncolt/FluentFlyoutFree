@@ -11,7 +11,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using Windows.ApplicationModel;
 using Wpf.Ui.Controls;
 using MessageBox = Wpf.Ui.Controls.MessageBox;
 
@@ -26,15 +25,7 @@ public partial class HomePage : Page
         InitializeComponent();
         DataContext = SettingsManager.Current;
 
-        try
-        {
-            var version = Package.Current.Id.Version;
-            VersionTextBlock.Text = $"v{version.Major}.{version.Minor}.{version.Build}";
-        }
-        catch
-        {
-            VersionTextBlock.Text = "debug version";
-        }
+        VersionTextBlock.Text = AppInfo.Version == "debug" ? "debug version" : AppInfo.Version;
 
         UpdateLastCheckedText();
     }
@@ -70,14 +61,57 @@ public partial class HomePage : Page
 
         _lastChecked = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+        if (_isInstalling)
+            return;
+
         if (UpdateState.Current.IsUpdateAvailable)
         {
-            string url = !string.IsNullOrEmpty(UpdateState.Current.UpdateUrl) ? UpdateState.Current.UpdateUrl : "https://fluentflyout.com/changelog/";
+            if (UpdateCheckerService.CanInstall(UpdateCheckerService.LatestResult))
+            {
+                await InstallUpdateAsync(UpdateCheckerService.LatestResult!);
+                return;
+            }
+
+            string url = !string.IsNullOrEmpty(UpdateState.Current.UpdateUrl) ? UpdateState.Current.UpdateUrl : AppInfo.ReleasesUrl;
             UpdateCheckerService.OpenUpdateUrl(url);
         }
         else
         {
             await CheckForUpdatesAsync();
+        }
+    }
+
+    private bool _isInstalling;
+
+    private async Task InstallUpdateAsync(UpdateCheckerService.UpdateCheckResult update)
+    {
+        _isInstalling = true;
+        string downloadingFormat = Application.Current.TryFindResource("DownloadingUpdate") as string ?? "Downloading update... {0}%";
+
+        try
+        {
+            var progress = new Progress<double>(value =>
+                UpdateStatusText.Text = string.Format(downloadingFormat, (int)(value * 100)));
+
+            UpdateStatusText.Text = string.Format(downloadingFormat, 0);
+            bool started = await UpdateCheckerService.DownloadAndInstallAsync(update, progress);
+
+            if (started)
+            {
+                UpdateStatusText.Text = Application.Current.TryFindResource("InstallingUpdate") as string ?? "Installing update...";
+                return; // the app is shutting down
+            }
+
+            UpdateStatusText.Text = Application.Current.TryFindResource("UpdateInstallFailed") as string ?? "Update failed. Opening the release page...";
+            UpdateCheckerService.OpenUpdateUrl(update.UpdateUrl);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to install update from HomePage");
+        }
+        finally
+        {
+            _isInstalling = false;
         }
     }
 
@@ -87,15 +121,11 @@ public partial class HomePage : Page
         {
             UpdateStatusText.Text = Application.Current.FindResource("CheckingForUpdates")?.ToString();
 
-            var result = await UpdateCheckerService.CheckForUpdatesAsync(SettingsManager.Current.LastKnownVersion);
+            // also publishes the result to UpdateState
+            var result = await UpdateCheckerService.CheckForUpdatesAsync(AppInfo.Version);
 
             if (result.Success)
             {
-                UpdateState.Current.IsUpdateAvailable = result.IsUpdateAvailable;
-                UpdateState.Current.NewestVersion = result.NewestVersion;
-                UpdateState.Current.UpdateUrl = result.UpdateUrl;
-                UpdateState.Current.LastUpdateCheck = result.CheckedAt;
-
                 UpdateLastCheckedText();
 
                 _ = Dispatcher.InvokeAsync(async () =>
@@ -166,22 +196,6 @@ public partial class HomePage : Page
         SettingsWindow.NavigateToPage(typeof(SystemPage));
     }
 
-    private void ViewMicrosoftStore_Click(object sender, System.Windows.RoutedEventArgs e)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "https://apps.microsoft.com/detail/9N45NSM4TNBP",
-                UseShellExecute = true
-            });
-        }
-        catch
-        {
-            Logger.Error("Failed to open Microsoft Store page");
-        }
-    }
-
     private void ViewLogs_Click(object sender, System.Windows.RoutedEventArgs e)
     {
         try
@@ -200,7 +214,7 @@ public partial class HomePage : Page
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = "https://github.com/unchihugo/FluentFlyout/issues/new/choose",
+                FileName = AppInfo.IssuesUrl,
                 UseShellExecute = true
             });
         }

@@ -46,9 +46,27 @@ public partial class VolumeMixerViewModel : ObservableObject, IDisposable
 
         AttachDevice(AudioDeviceMonitor.Instance.GetDefaultRenderDevice());
 
+        // polling only runs while the volume mixer is visible (see StartPolling/StopPolling);
+        // values are synced on demand otherwise, so the app doesn't wake up every second while idle
         _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000) };
         _pollTimer.Tick += OnPollTick;
-        _pollTimer.Start();
+    }
+
+    /// <summary>
+    /// Starts periodically syncing volume levels from the device. Call when the volume mixer becomes visible.
+    /// </summary>
+    public void StartPolling()
+    {
+        if (_pollTimer is { IsEnabled: false })
+            _pollTimer.Start();
+    }
+
+    /// <summary>
+    /// Stops periodic syncing. Call when the volume mixer is hidden.
+    /// </summary>
+    public void StopPolling()
+    {
+        _pollTimer?.Stop();
     }
 
     partial void OnIsExpandedChanged(bool oldValue, bool newValue)
@@ -129,6 +147,8 @@ public partial class VolumeMixerViewModel : ObservableObject, IDisposable
     {
         if (_device == null) return false;
 
+        // values aren't polled while the mixer is hidden, so refresh before applying a relative change
+        SyncMasterFromDevice();
         MasterVolume = Math.Clamp(MasterVolume + delta, 0f, 1f);
         return true;
     }
@@ -140,13 +160,31 @@ public partial class VolumeMixerViewModel : ObservableObject, IDisposable
         if (session == null)
             return false;
 
+        TrySyncSession(session);
         session.AdjustVolume(delta);
         return true;
     }
 
     public float? GetSessionVolume(int processId)
     {
-        return FindSession(processId)?.Volume;
+        var session = FindSession(processId);
+        if (session == null)
+            return null;
+
+        TrySyncSession(session);
+        return session.Volume;
+    }
+
+    private static void TrySyncSession(AudioSessionModel session)
+    {
+        try
+        {
+            session.SyncFromDevice();
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug(ex, "Failed to sync audio session volume");
+        }
     }
 
     private AudioSessionModel? FindSession(int processId)

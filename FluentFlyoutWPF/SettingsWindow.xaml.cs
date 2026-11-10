@@ -219,8 +219,6 @@ public partial class SettingsWindow : FluentWindow
         await Task.Delay(10);
         RootNavigation.IsPaneOpen = false;
 
-        LicenseManager.GetPremiumProductInfo();
-
         RootNavigation.Navigated += (s, args) =>
         {
             _currentPageType = args.Page?.GetType();

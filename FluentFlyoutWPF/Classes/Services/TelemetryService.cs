@@ -18,9 +18,7 @@ public static class TelemetryService
 
         try
         {
-            string appVersion = (SettingsManager.Current.LastKnownVersion ?? "unknown")
-                + "-"
-                + (SettingsManager.Current.IsStoreVersion ? "store" : "github");
+            string appVersion = (SettingsManager.Current.LastKnownVersion ?? "unknown") + "-github";
 
             var telemetryData = new
             {

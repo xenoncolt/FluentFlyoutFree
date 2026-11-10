@@ -1,0 +1,106 @@
+name: Release installer
+
+# Builds FluentFlyoutFree-Setup-x64.exe / -arm64.exe (+ latest.json) and publishes them as a GitHub release.
+# Installed copies of the app read latest.json from the latest release and update themselves from these
+# assets, so keep the asset names unchanged.
+#
+# Release a new version by either:
+#   - running this workflow from the Actions tab (Run workflow). Leave the version empty to use the next
+#     patch number after the latest release (or the csproj <Version> if that is higher), or type one.
+#   - or pushing a tag:   git tag v1.0.1 && git push origin v1.0.1
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, e.g. 1.0.1. Leave empty to bump the patch number of the latest release.'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $isManual = '${{ github.event_name }}' -eq 'workflow_dispatch'
+          $v = if ($isManual) { "$env:INPUT_VERSION" } else { '${{ github.ref_name }}' }
+          $v = $v.Trim().TrimStart('v')
+
+          if (-not $v) {
+            # no version given: next patch after the latest release, unless the csproj asks for a higher one
+            [xml]$csproj = Get-Content FluentFlyoutWPF/FluentFlyout.csproj
+            $projectVersion = [version](@($csproj.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0])
+            $latestTag = gh release view --json tagName --jq '.tagName' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $latestTag) {
+              $latest = [version]$latestTag.TrimStart('v')
+              $next = if ($projectVersion -gt $latest) { $projectVersion } else { [version]::new($latest.Major, $latest.Minor, $latest.Build + 1) }
+              Write-Host "Latest release: $latestTag, csproj: $projectVersion"
+            } else {
+              $next = $projectVersion
+              Write-Host "No release yet, using the csproj version"
+            }
+            $v = $next.ToString(3)
+          }
+
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3 (got '$v')" }
+
+          if ($isManual) {
+            git ls-remote --exit-code --tags origin "refs/tags/v$v" | Out-Null
+            if ($LASTEXITCODE -eq 0) { throw "Tag v$v already exists. Choose a higher version." }
+          }
+
+          Write-Host "Releasing v$v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build installers
+        shell: pwsh
+        run: ./installer/build-installer.ps1 -Version ${{ steps.version.outputs.version }} -Arch x64,arm64
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = "v$env:VERSION"
+          # latest.json is the update manifest the app reads; keep it in every release
+          gh release create $tag `
+            artifacts/installer/FluentFlyoutFree-Setup-x64.exe `
+            artifacts/installer/FluentFlyoutFree-Setup-arm64.exe `
+            artifacts/installer/latest.json `
+            --title "FluentFlyout Free $tag" `
+            --target "${{ github.sha }}" `
+            --generate-notes

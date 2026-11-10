@@ -37,6 +37,10 @@ namespace FluentFlyoutWPF.Classes
         private int _fftPos = 0;
         private readonly Complex[] _fftBuffer;
 
+        // precomputed Hamming window: avoids a Math.Cos call for every captured sample
+        private readonly float[] _window;
+        private float[] _currentBars = [];
+
         private readonly int _targetFps = 30;
         private DateTime _lastUpdateTime = DateTime.MinValue;
 
@@ -80,6 +84,9 @@ namespace FluentFlyoutWPF.Classes
             InitializeBitmap();
 
             _fftBuffer = new Complex[_fftLength];
+            _window = new float[_fftLength];
+            for (int i = 0; i < _fftLength; i++)
+                _window[i] = (float)FastFourierTransform.HammingWindow(i, _fftLength);
 
             ResizeBarList(SettingsManager.Current.TaskbarVisualizerBarCount);
             AudioDeviceMonitor.Instance.DefaultDeviceChanged += OnDefaultDeviceChanged;
@@ -311,7 +318,7 @@ namespace FluentFlyoutWPF.Classes
                     sampleValue = BitConverter.ToInt16(e.Buffer, i * 2) / 32768f;
                 }
 
-                _fftBuffer[_fftPos].X = (float)(sampleValue * FastFourierTransform.HammingWindow(_fftPos, _fftLength));
+                _fftBuffer[_fftPos].X = sampleValue * _window[_fftPos];
                 _fftBuffer[_fftPos].Y = 0;
                 _fftPos++;
 
@@ -374,7 +381,9 @@ namespace FluentFlyoutWPF.Classes
             float minDb = (SettingsManager.Current.TaskbarVisualizerAudioSensitivity * -10f) - 30f;
             float maxDb = (SettingsManager.Current.TaskbarVisualizerAudioPeakLevel * 10f) - 30f;
 
-            float[] currentBars = new float[BarCount];
+            if (_currentBars.Length != BarCount)
+                _currentBars = new float[BarCount];
+            float[] currentBars = _currentBars;
 
             for (int i = 0; i < BarCount; i++)
             {

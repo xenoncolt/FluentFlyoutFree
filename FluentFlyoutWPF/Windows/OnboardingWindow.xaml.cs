@@ -51,8 +51,6 @@ public partial class OnboardingWindow : MicaWindow
         {
             await Task.Delay(500);
             _viewModel.IsLoading = false;
-
-            FluentFlyout.Classes.LicenseManager.GetPremiumProductInfo();
         };
 
         // unused for now, but can be used in the future if we want to allow users to select a monitor during onboarding

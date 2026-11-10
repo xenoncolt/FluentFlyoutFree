@@ -24,7 +24,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
-using Windows.ApplicationModel;
 using Windows.Media.Control;
 using static FluentFlyout.Classes.NativeMethods;
 using static FluentFlyoutWPF.Classes.Utils.MonitorUtil;
@@ -159,7 +158,7 @@ public partial class MainWindow : MicaWindow
             RegistryKey? key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
             string? executablePath = Environment.ProcessPath;
             if (key != null && executablePath != null)
-                key.SetValue("FluentFlyout", executablePath);
+                key.SetValue("FluentFlyout", $"\"{executablePath}\""); // quoted: install paths can contain spaces
         }
 
         // display tray icon if enabled
@@ -204,23 +203,17 @@ public partial class MainWindow : MicaWindow
         {
             LocalizationManager.ApplyLocalization();
 
-            try // update last known version. gets the version of the app, works only in release mode
-            {
-                var version = Package.Current.Id.Version;
-                SettingsManager.Current.LastKnownVersion = $"v{version.Major}.{version.Minor}.{version.Build}";
-            }
-            catch
-            {
-                SettingsManager.Current.LastKnownVersion = "debug";
-            }
+            // update last known version ("debug" for Debug builds)
+            SettingsManager.Current.LastKnownVersion = AppInfo.Version;
 
-            Logger.Info($"Current version: {SettingsManager.Current.LastKnownVersion}");
+            Logger.Info($"Current version: {SettingsManager.Current.LastKnownVersion} ({(AppInfo.IsPackaged ? "packaged" : "installer")})");
 
             Notifications.ShowFirstOrUpdateNotification(previousVersion, SettingsManager.Current.LastKnownVersion);
             FlowDirection = SettingsManager.Current.FlowDirection;
 
-            // check for updates on startup
-            _ = CheckForUpdatesOnStartupAsync();
+            // check GitHub for updates shortly after startup and periodically afterwards;
+            // new releases are installed automatically when enabled
+            UpdateCheckerService.StartBackgroundChecks();
         });
     }
 
@@ -246,31 +239,6 @@ public partial class MainWindow : MicaWindow
             }
             else
                 OnboardingWindow.ShowInstance();
-        }
-    }
-
-    private async Task CheckForUpdatesOnStartupAsync()
-    {
-        try
-        {
-            var result = await UpdateCheckerService.CheckForUpdatesAsync(SettingsManager.Current.LastKnownVersion);
-
-            if (result.Success)
-            {
-                UpdateState.Current.IsUpdateAvailable = result.IsUpdateAvailable;
-                UpdateState.Current.NewestVersion = result.NewestVersion;
-                UpdateState.Current.UpdateUrl = result.UpdateUrl;
-                UpdateState.Current.LastUpdateCheck = result.CheckedAt;
-
-                if (result.IsUpdateAvailable)
-                {
-                    Notifications.ShowUpdateAvailableNotification(result.NewestVersion, result.UpdateUrl);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Failed to check for updates on startup");
         }
     }
 
@@ -731,7 +699,7 @@ public partial class MainWindow : MicaWindow
     {
         Process.Start(new ProcessStartInfo
         {
-            FileName = "https://github.com/unchihugo/FluentFlyout/issues/new/choose",
+            FileName = AppInfo.IssuesUrl,
             UseShellExecute = true
         });
     }
@@ -1568,6 +1536,7 @@ public partial class MainWindow : MicaWindow
         try
         {
             _isCleaningUp = true;
+            UpdateCheckerService.StopBackgroundChecks();
             _displayRefreshTimer.Stop();
             _displayRefreshTimer.Tick -= DisplayRefreshTimer_Tick;
 
@@ -1643,6 +1612,22 @@ public partial class MainWindow : MicaWindow
 
     private void NotifyIconQuit_Click(object sender, RoutedEventArgs e)
     {
+        try
+        {
+            CleanupResources();
+        }
+        finally
+        {
+            Application.Current.Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// Exits the app so the update installer can replace its files. The installer relaunches the app afterwards.
+    /// </summary>
+    internal void ShutdownForUpdate()
+    {
+        Logger.Info("Shutting down to install an update");
         try
         {
             CleanupResources();
@@ -1968,25 +1953,6 @@ public partial class MainWindow : MicaWindow
         {
             Logger.Error(ex, "Failed to initialize tray icon");
         }
-
-        try
-        {
-            await LicenseManager.Instance.InitializeAsync();
-
-            // Sync license status from LicenseManager to SettingsManager
-            SettingsManager.Current.IsPremiumUnlocked = LicenseManager.Instance.IsPremiumUnlocked;
-            SettingsManager.Current.IsStoreVersion = LicenseManager.Instance.IsStoreVersion;
-            SettingsManager.SaveSettings();
-
-            Logger.Info($"License synced on startup - Store: {SettingsManager.Current.IsStoreVersion}, Premium: {SettingsManager.Current.IsPremiumUnlocked}");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Failed to initialize license");
-        }
-
-        // Add the experiments loading here
-        await ExperimentsService.GetExperimentsAsync();
 
         BitmapHelper.GetDominantColors(1);
         volumeMixerWindow = new VolumeMixerWindow();

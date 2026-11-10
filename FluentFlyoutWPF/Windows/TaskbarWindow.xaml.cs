@@ -46,6 +46,19 @@ public partial class TaskbarWindow : Window
     private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _lastPlaybackStatus;
     private DispatcherTimer? _autoHideTimer;
 
+    // last region applied with SetWindowRgn; re-applying an identical region forces a needless repaint every tick
+    private Rect[]? _lastRegionRects;
+
+    // shared, frozen transform for vertical taskbars (avoids allocating a new transform on every position update)
+    private static readonly System.Windows.Media.RotateTransform VerticalRotation = CreateVerticalRotation();
+
+    private static System.Windows.Media.RotateTransform CreateVerticalRotation()
+    {
+        var transform = new System.Windows.Media.RotateTransform(90);
+        transform.Freeze();
+        return transform;
+    }
+
     public TaskbarWindow()
     {
         WindowHelper.SetNoActivate(this);
@@ -235,8 +248,27 @@ public partial class TaskbarWindow : Window
         }
     }
 
+    private static bool RegionEquals(Rect[]? previous, Rect[] current)
+    {
+        if (previous == null || previous.Length != current.Length)
+            return false;
+
+        for (int i = 0; i < current.Length; i++)
+        {
+            if (!previous[i].Equals(current[i]))
+                return false;
+        }
+
+        return true;
+    }
+
     private void UpdateWindowRegion(IntPtr windowHandle, params Rect[] rects)
     {
+        if (RegionEquals(_lastRegionRects, rects))
+            return; // unchanged
+
+        _lastRegionRects = rects;
+
         IntPtr rgn = CreateRectRgn(0, 0, 0, 0);
         foreach (var r in rects)
         {
@@ -283,7 +315,9 @@ public partial class TaskbarWindow : Window
 
 on_error:
 
-// All regions that were not sent without errors to SetWindowRgn must be destroyed manually
+        _lastRegionRects = null; // retry on the next update
+
+        // All regions that were not sent without errors to SetWindowRgn must be destroyed manually
         DeleteObject(rgn);
         if (SetWindowRgn(windowHandle, IntPtr.Zero, true) == 0)
             Logger.Error("Taskbar Widget error during window region reset.");
@@ -297,8 +331,7 @@ on_error:
             return;
         }
 
-        // Check premium status before allowing widget to be displayed
-        if (!SettingsManager.Current.TaskbarWidgetEnabled || !SettingsManager.Current.IsPremiumUnlocked)
+        if (!SettingsManager.Current.TaskbarWidgetEnabled)
             return;
 
         try
@@ -470,7 +503,7 @@ on_error:
         int taskbarWidth = taskbarRect.Right - taskbarRect.Left;
 
         // Apply orientation transform
-        Widget.LayoutTransform = isVertical ? new System.Windows.Media.RotateTransform(90) : null;
+        Widget.LayoutTransform = isVertical ? VerticalRotation : null;
         Widget.RenderTransform = System.Windows.Media.Transform.Identity;
 
         // On a vertical taskbar the widget is rotated 90°, so the axes flip:
@@ -653,7 +686,7 @@ on_error:
             return Rect.Empty;
 
         // Rotate visualizer 90° on vertical taskbar so it fits the slim width
-        TaskbarVisualizer.LayoutTransform = isVertical ? new System.Windows.Media.RotateTransform(90) : null;
+        TaskbarVisualizer.LayoutTransform = isVertical ? VerticalRotation : null;
 
         int taskbarHeight = taskbarRect.Bottom - taskbarRect.Top;
         int taskbarWidth = taskbarRect.Right - taskbarRect.Left;
@@ -701,8 +734,7 @@ on_error:
 
     public void UpdateUi(string title, string artist, BitmapImage? icon, GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus, GlobalSystemMediaTransportControlsSessionPlaybackControls? playbackControls = null)
     {
-        // Check premium status - hide widget if not unlocked
-        if ((!SettingsManager.Current.TaskbarWidgetEnabled || !SettingsManager.Current.IsPremiumUnlocked))
+        if (!SettingsManager.Current.TaskbarWidgetEnabled)
         {
             if (_timer.IsEnabled) // pause timer to save resources
                 _timer.Stop();

@@ -88,8 +88,9 @@ public partial class VolumeMixerWindow : MicaWindow
                 WindowBlurHelper.DisableBlur(this);
             }
 
-            // refresh all data
+            // refresh all data, then keep it in sync while visible
             ViewModel.OnPollTick(null, EventArgs.Empty);
+            ViewModel.StartPolling();
 
             bool aboveMedia = SettingsManager.Current.VolumeControlAboveMediaFlyout;
             if (aboveMedia)
@@ -189,6 +190,7 @@ public partial class VolumeMixerWindow : MicaWindow
             return;
 
         WindowHelper.SetVisibility(this, false);
+        ViewModel.StopPolling();
         ViewModel.IsExpanded = false;
         _ = Task.Run(() => ShowVolumeOsd());
     }

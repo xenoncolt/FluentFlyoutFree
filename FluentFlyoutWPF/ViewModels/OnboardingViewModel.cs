@@ -66,8 +66,8 @@ public class OnboardingViewModel : ObservableObject
         },
         new OnboardingStep
         {
-            Title = Application.Current.TryFindResource("UnlockFullExperienceText").ToString(),
-            Description = "",
+            Title = Application.Current.TryFindResource("TaskbarWidgetCustomizationTitle").ToString(),
+            Description = Application.Current.TryFindResource("TaskbarWidgetDescription").ToString(),
             ImageSource = "/Resources/Onboarding/Taskbar.png"
         }
     ];
@@ -86,7 +86,7 @@ public class OnboardingViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsMediaStep));
                 OnPropertyChanged(nameof(IsVolumeStep));
                 OnPropertyChanged(nameof(IsLockKeysStep));
-                OnPropertyChanged(nameof(IsPremiumStep));
+                OnPropertyChanged(nameof(IsTaskbarStep));
                 OnPropertyChanged(nameof(CanGoBack));
                 GoBackCommand.NotifyCanExecuteChanged();
             }
@@ -107,7 +107,7 @@ public class OnboardingViewModel : ObservableObject
 
     public bool IsLockKeysStep => CurrentStepIndex == 2;
 
-    public bool IsPremiumStep => CurrentStepIndex == 3;
+    public bool IsTaskbarStep => CurrentStepIndex == 3;
 
     public bool CanGoBack => CurrentStepIndex > 0;
 

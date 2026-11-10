@@ -20,9 +20,8 @@ public static class WindowBlurHelper
     /// <param name="blurBackgroundColor">Background color in BGR format (default: 0x202020)</param>
     public static void EnableBlur(Window window, uint blurOpacity = 175, uint blurBackgroundColor = 0x202020)
     {
-        // override opacity if premium is unlocked
-        if (SettingsManager.Current.IsPremiumUnlocked) blurOpacity = SettingsManager.Current.AcrylicBlurOpacity;
-        blurOpacity = Math.Clamp(blurOpacity, 0, 255);
+        // the user-configured opacity always takes precedence
+        blurOpacity = Math.Clamp(SettingsManager.Current.AcrylicBlurOpacity, 0, 255);
 
         var windowHelper = new WindowInteropHelper(window);
 
@@ -93,7 +92,7 @@ public static class WindowBlurHelper
     /// <param name="newBlurOpacity">New opacity value (0-255)</param>
     public static void AdjustBlurOpacityForAllWindows(uint newBlurOpacity)
     {
-        newBlurOpacity = SettingsManager.Current.IsPremiumUnlocked ? Math.Clamp(newBlurOpacity, 0, 255) : 175;
+        newBlurOpacity = Math.Clamp(newBlurOpacity, 0, 255);
 
         foreach (Window window in Application.Current.Windows)
         {

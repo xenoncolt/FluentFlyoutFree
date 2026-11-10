@@ -50,7 +50,7 @@ internal static class Notifications
 
     public static void OpenChangelogInBrowser()
     {
-        OpenUrlInBrowser("https://fluentflyout.com/changelog/");
+        OpenUrlInBrowser(FluentFlyoutWPF.Classes.Utils.AppInfo.ReleasesUrl);
     }
 
     /// <summary>

@@ -41,7 +41,7 @@ public partial class SystemPage : Page
             {
                 if (File.Exists(executablePath))
                 {
-                    key.SetValue(appName, executablePath);
+                    key.SetValue(appName, $"\"{executablePath}\""); // quoted: install paths can contain spaces
                 }
                 else
                 {

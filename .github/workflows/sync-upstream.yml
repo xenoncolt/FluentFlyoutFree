@@ -1,0 +1,273 @@
+name: Sync upstream
+
+# Every Monday: merge the original FluentFlyout (upstream) into the "upstream-sync" branch, check that it
+# still builds, and open (or update) a pull request. Then you:
+#   1. merge the pull request with "Create a merge commit"
+#   2. run Actions -> "Release installer" -> Run workflow (leave the version empty to bump the patch number)
+#
+# If something needs a human (merge conflicts, build errors), the run fails, GitHub emails you, and the
+# run's summary page explains what happened.
+#
+# One-time setup (see installer/README.md): add the repository secret UPSTREAM_SYNC_TOKEN. Without it,
+# a sync fails whenever upstream changed its own workflow files, because GitHub doesn't allow the
+# built-in Actions token to push those.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: unchihugo/FluentFlyout
+  UPSTREAM_BRANCH: master
+  BASE_BRANCH: master
+  SYNC_BRANCH: upstream-sync
+
+jobs:
+  sync:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+
+      - name: Check upstream for new commits
+        id: check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          git remote add upstream "https://github.com/$env:UPSTREAM_REPO.git"
+          git fetch upstream $env:UPSTREAM_BRANCH --no-tags
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch $env:UPSTREAM_REPO" }
+
+          $upstreamRef = "upstream/$env:UPSTREAM_BRANCH"
+          $newCommits = [int](git rev-list --count "HEAD..$upstreamRef")
+          $run = $newCommits -gt 0
+
+          # skip if the open sync branch already contains both the latest upstream and the latest base branch
+          if ($run -and (git rev-parse --verify --quiet "refs/remotes/origin/$env:SYNC_BRANCH")) {
+            git merge-base --is-ancestor $upstreamRef "origin/$env:SYNC_BRANCH"; $hasUpstream = $LASTEXITCODE -eq 0
+            git merge-base --is-ancestor HEAD "origin/$env:SYNC_BRANCH"; $hasBase = $LASTEXITCODE -eq 0
+            if ($hasUpstream -and $hasBase) {
+              $run = $false
+              "### ⏳ The pull request from ``$env:SYNC_BRANCH`` already has the latest upstream changes" >> $env:GITHUB_STEP_SUMMARY
+              "Merge it to bring them into ``$env:BASE_BRANCH``." >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
+
+          if ($newCommits -eq 0) {
+            "### ✅ Already up to date with $env:UPSTREAM_REPO" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+          "run=$($run.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          "new_commits=$newCommits" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Merge upstream
+        id: merge
+        if: steps.check.outputs.run == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B $env:SYNC_BRANCH
+
+          git merge "upstream/$env:UPSTREAM_BRANCH" --no-edit -m "Merge upstream $env:UPSTREAM_REPO"
+          $autoResolved = @()
+
+          if ($LASTEXITCODE -ne 0) {
+            # premium files this fork deleted on purpose: if upstream edited them, keep them deleted
+            $forkDeleted = @(
+              'FluentFlyoutWPF/Classes/LicenseManager.cs',
+              'FluentFlyoutWPF/Controls/PremiumPurchaseButton.xaml',
+              'FluentFlyoutWPF/Controls/PremiumPurchaseButton.xaml.cs',
+              'FluentFlyoutWPF/Controls/PremiumUnlockedBanner.xaml',
+              'FluentFlyoutWPF/Controls/PremiumUnlockedBanner.xaml.cs',
+              'FluentFlyoutWPF/Controls/AccentBadge.xaml',
+              'FluentFlyoutWPF/Controls/AccentBadge.xaml.cs'
+            )
+
+            $remaining = @()
+            foreach ($file in @(git diff --name-only --diff-filter=U)) {
+              if ($forkDeleted -contains $file) {
+                git rm --quiet -- $file
+                $autoResolved += $file
+              } else {
+                $remaining += $file
+              }
+            }
+
+            if ($remaining.Count -gt 0) {
+              git merge --abort
+              @(
+                "## ⚠️ Upstream changes conflict with this fork"
+                ""
+                "Upstream and this fork changed the same lines in these files, so they can't be merged automatically:"
+                ""
+                ($remaining | ForEach-Object { "- ``$_``" })
+                ""
+                "Nothing was changed in your repository. To merge by hand on your PC:"
+                ""
+                '```'
+                "git checkout $env:BASE_BRANCH"
+                "git pull"
+                "git fetch upstream"
+                "git merge upstream/$env:UPSTREAM_BRANCH"
+                '```'
+                ""
+                "Fix the files listed above (or ask an assistant to), then ``git commit`` and ``git push``."
+                "To cancel a merge you started: ``git merge --abort``."
+              ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              exit 1
+            }
+
+            git commit --no-edit
+            if ($LASTEXITCODE -ne 0) { throw "Could not commit the merge" }
+          }
+
+          "auto_resolved=$($autoResolved -join ',')" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Setup .NET
+        if: steps.check.outputs.run == 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build merged code
+        if: steps.check.outputs.run == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          dotnet build FluentFlyoutWPF/FluentFlyout.csproj -c Release -p:Platform=x64 -nologo 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            $errors = Select-String -Path build.log -Pattern ': error ' |
+              ForEach-Object { ($_.Line -replace '\s*\[[^\]]*\]$', '').Trim() } |
+              Sort-Object -Unique | Select-Object -First 20
+            @(
+              "## ❌ The merged code doesn't build"
+              ""
+              "Upstream merged without conflicts, but the result has build errors. This usually means"
+              "upstream added code that uses something this fork removed (for example the premium/licence code)."
+              "Nothing was changed in your repository."
+              ""
+              '```'
+              $errors
+              '```'
+            ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+          exit 0
+
+      - name: Push branch and open pull request
+        if: steps.check.outputs.run == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          AUTO_RESOLVED: ${{ steps.merge.outputs.auto_resolved }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $upstreamRef = "upstream/$env:UPSTREAM_BRANCH"
+          $upstreamSha = git rev-parse --short $upstreamRef
+
+          $pushOutput = git push --force origin "HEAD:refs/heads/$env:SYNC_BRANCH" 2>&1 | Out-String
+          Write-Host $pushOutput
+          if ($LASTEXITCODE -ne 0) {
+            if ($pushOutput -match 'workflow') {
+              @(
+                "## 🔑 Needs the UPSTREAM_SYNC_TOKEN secret"
+                ""
+                "Upstream changed its GitHub workflow files, and GitHub doesn't allow the built-in Actions token"
+                "to push those. Add the ``UPSTREAM_SYNC_TOKEN`` secret (see ``installer/README.md``) and run this"
+                "workflow again (Actions -> Sync upstream -> Run workflow)."
+              ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            } else {
+              "## ❌ Could not push the ``$env:SYNC_BRANCH`` branch" >> $env:GITHUB_STEP_SUMMARY
+              '```' >> $env:GITHUB_STEP_SUMMARY
+              $pushOutput >> $env:GITHUB_STEP_SUMMARY
+              '```' >> $env:GITHUB_STEP_SUMMARY
+            }
+            exit 1
+          }
+
+          # lines added by upstream that mention premium/licensing: worth a look before merging
+          $premiumFiles = @()
+          $changedFiles = git diff --name-only $env:BASE_BRANCH HEAD -- FluentFlyoutWPF ':(exclude)FluentFlyoutWPF/Resources/Localization'
+          foreach ($file in $changedFiles) {
+            $hits = git diff -U0 $env:BASE_BRANCH HEAD -- $file |
+              Select-String -Pattern '^\+(?!\+\+).*(Premium|LicenseManager|StoreContext|IsStoreVersion)'
+            if ($hits) { $premiumFiles += "- ``$file`` ($(@($hits).Count) line(s))" }
+          }
+
+          $commits = git log --no-merges --format='- %h %s' "$env:BASE_BRANCH..$upstreamRef" | Select-Object -First 40
+          $commitCount = [int](git rev-list --no-merges --count "$env:BASE_BRANCH..$upstreamRef")
+
+          $body = @(
+            "Automated merge of the latest changes from [$env:UPSTREAM_REPO](https://github.com/$env:UPSTREAM_REPO) (``$upstreamSha``)."
+            ""
+            "- ✅ Merged without conflicts"
+            "- ✅ Builds successfully"
+          )
+          if ($env:AUTO_RESOLVED) {
+            $body += "- ℹ️ Upstream edited premium files this fork removed; they were kept removed: $($env:AUTO_RESOLVED -replace ',', ', ')"
+          }
+          if ($premiumFiles.Count -gt 0) {
+            $body += @(
+              ""
+              "> [!WARNING]"
+              "> Upstream added code mentioning premium/licensing. Check that nothing gets locked or shows a purchase prompt:"
+              ($premiumFiles | ForEach-Object { "> $_" })
+            )
+          }
+          $body += @(
+            ""
+            "### Next steps"
+            "1. Merge this pull request with **Create a merge commit** (not *Squash* or *Rebase*: those make every future sync conflict)."
+            "2. Go to **Actions → Release installer → Run workflow** and leave the version empty to release the next patch version."
+            ""
+            "<details><summary>$commitCount upstream commit(s)</summary>"
+            ""
+            $commits
+            $(if ($commitCount -gt 40) { "- …" })
+            ""
+            "</details>"
+          )
+          $bodyFile = Join-Path $env:RUNNER_TEMP 'pr-body.md'
+          $body | Out-File $bodyFile -Encoding utf8
+
+          $title = "Sync with upstream FluentFlyout ($upstreamSha)"
+          $existing = gh pr list --head $env:SYNC_BRANCH --base $env:BASE_BRANCH --state open --json number --jq '.[0].number'
+          if ($existing) {
+            gh pr edit $existing --title $title --body-file $bodyFile
+            $prUrl = gh pr view $existing --json url --jq '.url'
+          } else {
+            $prUrl = gh pr create --base $env:BASE_BRANCH --head $env:SYNC_BRANCH --title $title --body-file $bodyFile
+          }
+
+          if ($LASTEXITCODE -ne 0 -or -not $prUrl) {
+            @(
+              "## ⚠️ Merged and built, but the pull request couldn't be opened automatically"
+              ""
+              "Open it yourself: https://github.com/$env:GITHUB_REPOSITORY/compare/$env:BASE_BRANCH...$env:SYNC_BRANCH?expand=1"
+              ""
+              "To let this workflow open it next time, add the ``UPSTREAM_SYNC_TOKEN`` secret, or enable"
+              "Settings -> Actions -> General -> *Allow GitHub Actions to create and approve pull requests*."
+            ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+
+          "## ✅ Pull request ready: $prUrl" >> $env:GITHUB_STEP_SUMMARY
+          exit 0

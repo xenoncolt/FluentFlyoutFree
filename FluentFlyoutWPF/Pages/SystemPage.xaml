@@ -29,18 +29,15 @@
                 <ComboBox x:Name="FlyoutSelectedMonitorComboBox" SelectedIndex="{Binding FlyoutSelectedMonitor, Mode=TwoWay}" Style="{StaticResource DefaultComboBoxStyle}">
                 </ComboBox>
             </ui:CardControl>
-            <ui:CardControl x:Name="AcrylicBlurOpacityCard" Tag="Indexable" Icon="{ui:SymbolIcon PaintBucket24}" Margin="0,0,0,3" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}">
+            <ui:CardControl x:Name="AcrylicBlurOpacityCard" Tag="Indexable" Icon="{ui:SymbolIcon PaintBucket24}" Margin="0,0,0,3">
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="{DynamicResource AcrylicBlurOpacityTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
-                            <fluentflyoutcontrols:AccentBadge Margin="6,0,0,0" />
-                        </StackPanel>
+                        <TextBlock Text="{DynamicResource AcrylicBlurOpacityTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
                         <TextBlock Text="{DynamicResource AcrylicBlurOpacityDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
                 <StackPanel Orientation="Horizontal" >
-                    <Slider Minimum="0" Maximum="255" Value="{Binding AcrylicBlurOpacity, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" TickFrequency="5" IsSnapToTickEnabled="True" Width="150"
+                    <Slider Minimum="0" Maximum="255" Value="{Binding AcrylicBlurOpacity, Mode=TwoWay}" TickFrequency="5" IsSnapToTickEnabled="True" Width="150"
                             IsMoveToPointEnabled="True" />
                     <ui:TextBlock Text="{Binding AcrylicBlurOpacity}" Width="24" TextAlignment="Center" Margin="12,0,0,0" />
                 </StackPanel>
@@ -149,17 +146,14 @@
                 </ui:CardControl.Header>
                 <ui:ToggleSwitch IsChecked="{Binding NIconSymbol, Mode=TwoWay}" />
             </ui:CardControl>
-            <ui:CardControl x:Name="HideTrayIconCard" Tag="Indexable" Icon="{ui:SymbolIcon EyeOff24}" Margin="0,0,0,3" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}" >
+            <ui:CardControl x:Name="HideTrayIconCard" Tag="Indexable" Icon="{ui:SymbolIcon EyeOff24}" Margin="0,0,0,3">
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="{DynamicResource HideTrayIconTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
-                            <fluentflyoutcontrols:AccentBadge Margin="6,0,0,0" />
-                        </StackPanel>
+                        <TextBlock Text="{DynamicResource HideTrayIconTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
                         <TextBlock Text="{DynamicResource HideTrayIconDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ui:ToggleSwitch x:Name="NIconHideSwitch" IsChecked="{Binding NIconHide, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" Click="ToggleSwitch_Click" />
+                <ui:ToggleSwitch x:Name="NIconHideSwitch" IsChecked="{Binding NIconHide, Mode=TwoWay}" Click="ToggleSwitch_Click" />
             </ui:CardControl>
 
             <!-- back up & restore section -->
@@ -178,7 +172,16 @@
 
             <!-- update section -->
             <TextBlock Text="{DynamicResource UpdatesSectionTitle}" FontSize="14" FontWeight="SemiBold" Margin="0,12,0,6" />
-            <ui:CardControl x:Name="ShowUpdateNotificationsTitleCard" Tag="Indexable" Margin="0,0,0,36" >
+            <ui:CardControl x:Name="AutoInstallUpdatesTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon ArrowSync24}" Margin="0,0,0,3" >
+                <ui:CardControl.Header>
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="{DynamicResource AutoInstallUpdatesTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
+                        <TextBlock Text="{DynamicResource AutoInstallUpdatesDescription}" FontSize="12" Opacity="0.5" TextWrapping="WrapWithOverflow" />
+                    </StackPanel>
+                </ui:CardControl.Header>
+                <ui:ToggleSwitch IsChecked="{Binding AutoInstallUpdates, Mode=TwoWay}" />
+            </ui:CardControl>
+            <ui:CardControl x:Name="ShowUpdateNotificationsTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon Alert24}" Margin="0,0,0,36" >
                 <ui:CardControl.Header>
                     <TextBlock Text="{DynamicResource ShowUpdateNotificationsTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
                 </ui:CardControl.Header>

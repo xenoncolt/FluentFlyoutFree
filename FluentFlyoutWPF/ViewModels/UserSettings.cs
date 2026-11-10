@@ -672,31 +672,24 @@ public partial class UserSettings : ObservableObject
     public partial int TaskbarVisualizerAudioPeakLevel { get; set; }
 
     /// <summary>
-    /// Gets whether premium features are unlocked (runtime only, not persisted)
+    /// Always true: every feature is free in this edition. Kept (not persisted, setter ignored) so premium checks
+    /// that arrive with upstream merges still compile and stay unlocked.
     /// </summary>
     [XmlIgnore]
-    [NotifyPropertyChangedFor(nameof(IsPremiumUnlockedBannerOpen))]
-    [ObservableProperty]
-    public partial bool IsPremiumUnlocked { get; set; }
+    public bool IsPremiumUnlocked
+    {
+        get => true;
+        set { }
+    }
 
     /// <summary>
-    /// Gets or sets whether the premium unlocked banner has been closed.
+    /// Always false: this edition is never the Microsoft Store version. Kept for upstream-merge compatibility.
     /// </summary>
-    [NotifyPropertyChangedFor(nameof(IsPremiumUnlockedBannerOpen))]
-    [ObservableProperty]
-    public partial bool PremiumUnlockedBannerClosedOnce { get; set; }
-
     [XmlIgnore]
-    public bool IsPremiumUnlockedBannerOpen
+    public bool IsStoreVersion
     {
-        get => IsStoreVersion && IsPremiumUnlocked && !PremiumUnlockedBannerClosedOnce;
-        set
-        {
-            if (!value && IsStoreVersion && IsPremiumUnlocked)
-            {
-                PremiumUnlockedBannerClosedOnce = true;
-            }
-        }
+        get => false;
+        set { }
     }
 
     /// <summary>
@@ -709,21 +702,6 @@ public partial class UserSettings : ObservableObject
     public partial bool UseAlbumArtAsAccentColor { get; set; }
 
     /// <summary>
-    /// Gets whether this is a Store version. Once false, always false (only if last known version was not null).
-    /// </summary>
-    [NotifyPropertyChangedFor(nameof(IsPremiumUnlockedBannerOpen))]
-    [ObservableProperty]
-    public partial bool IsStoreVersion { get; set; }
-
-    [XmlIgnore]
-    [ObservableProperty]
-    public partial string PremiumPrice { get; set; }
-
-    [XmlIgnore]
-    [ObservableProperty]
-    public partial string PremiumPurchaseAction { get; set; }
-
-    /// <summary>
     /// Last time the program has sent an update notification in Unix seconds.
     /// </summary>
     [ObservableProperty]
@@ -734,6 +712,25 @@ public partial class UserSettings : ObservableObject
     /// </summary>
     [ObservableProperty]
     public partial bool ShowUpdateNotifications { get; set; }
+
+    /// <summary>
+    /// Determines whether new GitHub releases are downloaded and installed automatically.
+    /// Only applies to installer-based (unpackaged) installs.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool AutoInstallUpdates { get; set; }
+
+    /// <summary>
+    /// The version the updater last tried to install, used to avoid automatic install loops.
+    /// </summary>
+    [ObservableProperty]
+    public partial string LastUpdateAttemptVersion { get; set; }
+
+    /// <summary>
+    /// When the updater last tried to install <see cref="LastUpdateAttemptVersion"/>, in Unix seconds.
+    /// </summary>
+    [ObservableProperty]
+    public partial long LastUpdateAttemptUnixSeconds { get; set; }
 
     /// <summary>
     /// Determines whether to use the legacy method for calculating taskbar width for widget positioning for compatibility with other taskbar mods
@@ -845,6 +842,9 @@ public partial class UserSettings : ObservableObject
         UseAlbumArtAsAccentColor = false;
         LastUpdateNotificationUnixSeconds = 0;
         ShowUpdateNotifications = true;
+        AutoInstallUpdates = true;
+        LastUpdateAttemptVersion = string.Empty;
+        LastUpdateAttemptUnixSeconds = 0;
         LegacyTaskbarWidthEnabled = false;
         Uuid = Guid.NewGuid();
         AnonymousTelemetryAllowed = true;
@@ -948,14 +948,6 @@ public partial class UserSettings : ObservableObject
     partial void OnTaskbarWidgetEnabledChanged(bool oldValue, bool newValue)
     {
         if (oldValue == newValue || _initializing) return;
-
-        // Check premium status before allowing widget to be enabled
-        if (newValue && !SettingsManager.Current.IsPremiumUnlocked)
-        {
-            // Revert the change if premium is not unlocked
-            TaskbarWidgetEnabled = false;
-            return;
-        }
 
         UpdateTaskbar();
     }
@@ -1102,18 +1094,6 @@ public partial class UserSettings : ObservableObject
 
         MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
         mainWindow?.RefreshFilteredMedia();
-    }
-
-    partial void OnVolumeMixerHighlightActiveAppsChanged(bool oldValue, bool newValue)
-    {
-        if (oldValue == newValue || _initializing) return;
-
-        // Check premium status before allowing highlight to be enabled
-        if (newValue && !SettingsManager.Current.IsPremiumUnlocked)
-        {
-            VolumeMixerHighlightActiveApps = false;
-            return;
-        }
     }
 
     partial void OnVolumeControlEnabledChanged(bool oldValue, bool newValue)

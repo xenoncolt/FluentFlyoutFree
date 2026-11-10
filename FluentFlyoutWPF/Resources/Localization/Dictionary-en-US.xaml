@@ -255,6 +255,13 @@ You can help contribute translations on</System:String>
     <System:String x:Key="UpdateAvailableNotificationMessage">A new version ({0}) is available.</System:String>
     <System:String x:Key="UpdateAvailableNotificationButton">Download Update</System:String>
     <System:String x:Key="ShowUpdateNotificationsTitle">Show notifications for new updates</System:String>
+    <System:String x:Key="AutoInstallUpdatesTitle">Automatically install updates</System:String>
+    <System:String x:Key="AutoInstallUpdatesDescription">Downloads new releases from GitHub in the background and installs them. FluentFlyout restarts for a moment while updating.</System:String>
+    <System:String x:Key="DownloadingUpdate">Downloading update... {0}%</System:String>
+    <System:String x:Key="InstallingUpdate">Installing update...</System:String>
+    <System:String x:Key="UpdateInstallFailed">Update failed. Opening the release page...</System:String>
+    <System:String x:Key="SupportOriginalDeveloperTitle">Support the original developer</System:String>
+    <System:String x:Key="SupportOriginalDeveloperDescription">This free edition is a community fork of FluentFlyout by unchihugo. If you enjoy the app, consider supporting the original project.</System:String>
     <System:String x:Key="BackupRestoreSectionTitle">Back up &amp; restore</System:String>
     <System:String x:Key="BackupRestoreCardTitle">Back up and restore your settings</System:String>
     <System:String x:Key="ExportSettings">Export Settings</System:String>
