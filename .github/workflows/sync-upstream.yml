@@ -3,7 +3,7 @@ name: Sync upstream
 # Every Monday: merge the original FluentFlyout (upstream) into the "upstream-sync" branch, check that it
 # still builds, and open (or update) a pull request. Then you:
 #   1. merge the pull request with "Create a merge commit"
-#   2. run Actions -> "Release installer" -> Run workflow (leave the version empty to bump the patch number)
+#   2. run Actions -> "Release installer" -> Run workflow (leave the version empty: it is picked automatically)
 #
 # If something needs a human (merge conflicts, build errors), the run fails, GitHub emails you, and the
 # run's summary page explains what happened.
@@ -215,12 +215,26 @@ jobs:
           $commits = git log --no-merges --format='- %h %s' "$env:BASE_BRANCH..$upstreamRef" | Select-Object -First 40
           $commitCount = [int](git rev-list --no-merges --count "$env:BASE_BRANCH..$upstreamRef")
 
+          # the version "Release installer" will pick automatically after this PR is merged
+          $versionLine = $null
+          try {
+            $latestTag = (gh release view --json tagName --jq '.tagName' 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) { $latestTag = '' }
+            $next = ./installer/next-version.ps1 -LatestTag $latestTag -UpstreamRef $upstreamRef
+            if ($next.Version -and $next.Bump -ne 'none') {
+              $versionLine = "- 📦 Releasing after merging will publish **v$($next.Version)** ($($next.Bump): $($next.Reason))"
+            }
+          } catch {
+            Write-Host "Could not predict the next version: $_"
+          }
+
           $body = @(
             "Automated merge of the latest changes from [$env:UPSTREAM_REPO](https://github.com/$env:UPSTREAM_REPO) (``$upstreamSha``)."
             ""
             "- ✅ Merged without conflicts"
             "- ✅ Builds successfully"
           )
+          if ($versionLine) { $body += $versionLine }
           if ($env:AUTO_RESOLVED) {
             $body += "- ℹ️ Upstream edited premium files this fork removed; they were kept removed: $($env:AUTO_RESOLVED -replace ',', ', ')"
           }
@@ -236,7 +250,7 @@ jobs:
             ""
             "### Next steps"
             "1. Merge this pull request with **Create a merge commit** (not *Squash* or *Rebase*: those make every future sync conflict)."
-            "2. Go to **Actions → Release installer → Run workflow** and leave the version empty to release the next patch version."
+            "2. Go to **Actions → Release installer → Run workflow** and leave the version empty; it picks the version automatically."
             ""
             "<details><summary>$commitCount upstream commit(s)</summary>"
             ""
