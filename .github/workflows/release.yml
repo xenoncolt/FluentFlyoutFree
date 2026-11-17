@@ -32,6 +32,9 @@ concurrency:
 env:
   UPSTREAM_REPO: unchihugo/FluentFlyout
   UPSTREAM_BRANCH: master
+  # Make every gh command act on this repo. Without it, gh picks the git remote named "upstream"
+  # (the original FluentFlyout) once that remote is added, and would publish the release there.
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   release:

@@ -30,6 +30,9 @@ env:
   UPSTREAM_BRANCH: master
   BASE_BRANCH: master
   SYNC_BRANCH: upstream-sync
+  # Make every gh command act on this repo. Without it, gh picks the git remote named "upstream"
+  # (the original FluentFlyout) once that remote is added, and tries to open the PR there.
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   sync:
@@ -46,6 +49,8 @@ jobs:
       - name: Check upstream for new commits
         id: check
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         run: |
           $ErrorActionPreference = 'Continue'
           git remote add upstream "https://github.com/$env:UPSTREAM_REPO.git"
@@ -56,13 +61,15 @@ jobs:
           $newCommits = [int](git rev-list --count "HEAD..$upstreamRef")
           $run = $newCommits -gt 0
 
-          # skip if the open sync branch already contains both the latest upstream and the latest base branch
+          # skip only if an open pull request already has both the latest upstream and the latest base branch
+          # (if the branch is up to date but no pull request is open, run again so one gets opened)
           if ($run -and (git rev-parse --verify --quiet "refs/remotes/origin/$env:SYNC_BRANCH")) {
             git merge-base --is-ancestor $upstreamRef "origin/$env:SYNC_BRANCH"; $hasUpstream = $LASTEXITCODE -eq 0
             git merge-base --is-ancestor HEAD "origin/$env:SYNC_BRANCH"; $hasBase = $LASTEXITCODE -eq 0
-            if ($hasUpstream -and $hasBase) {
+            $openPr = gh pr list --head $env:SYNC_BRANCH --base $env:BASE_BRANCH --state open --json url --jq '.[0].url' 2>$null
+            if ($hasUpstream -and $hasBase -and $openPr) {
               $run = $false
-              "### ⏳ The pull request from ``$env:SYNC_BRANCH`` already has the latest upstream changes" >> $env:GITHUB_STEP_SUMMARY
+              "### ⏳ [The open pull request]($openPr) already has the latest upstream changes" >> $env:GITHUB_STEP_SUMMARY
               "Merge it to bring them into ``$env:BASE_BRANCH``." >> $env:GITHUB_STEP_SUMMARY
             }
           }
@@ -265,20 +272,29 @@ jobs:
           $title = "Sync with upstream FluentFlyout ($upstreamSha)"
           $existing = gh pr list --head $env:SYNC_BRANCH --base $env:BASE_BRANCH --state open --json number --jq '.[0].number'
           if ($existing) {
-            gh pr edit $existing --title $title --body-file $bodyFile
+            $prOutput = gh pr edit $existing --title $title --body-file $bodyFile 2>&1 | Out-String
+            $prOk = $LASTEXITCODE -eq 0
             $prUrl = gh pr view $existing --json url --jq '.url'
           } else {
-            $prUrl = gh pr create --base $env:BASE_BRANCH --head $env:SYNC_BRANCH --title $title --body-file $bodyFile
+            $prOutput = gh pr create --base $env:BASE_BRANCH --head $env:SYNC_BRANCH --title $title --body-file $bodyFile 2>&1 | Out-String
+            $prOk = $LASTEXITCODE -eq 0
+            $prUrl = if ($prOutput -match 'https://github\.com/\S+/pull/\d+') { $Matches[0] } else { $null }
           }
+          Write-Host $prOutput
 
-          if ($LASTEXITCODE -ne 0 -or -not $prUrl) {
+          if (-not $prOk -or -not $prUrl) {
             @(
               "## ⚠️ Merged and built, but the pull request couldn't be opened automatically"
               ""
-              "Open it yourself: https://github.com/$env:GITHUB_REPOSITORY/compare/$env:BASE_BRANCH...$env:SYNC_BRANCH?expand=1"
+              "Open it yourself: https://github.com/${env:GITHUB_REPOSITORY}/compare/${env:BASE_BRANCH}...${env:SYNC_BRANCH}?expand=1"
               ""
-              "To let this workflow open it next time, add the ``UPSTREAM_SYNC_TOKEN`` secret, or enable"
-              "Settings -> Actions -> General -> *Allow GitHub Actions to create and approve pull requests*."
+              "GitHub's answer is below. If it says the action isn't allowed, check that the ``UPSTREAM_SYNC_TOKEN``"
+              "secret is set and its token has **Pull requests: Read and write** (or tick Settings → Actions → General →"
+              "*Allow GitHub Actions to create and approve pull requests*), then run this workflow again."
+              ""
+              '```'
+              $prOutput.Trim()
+              '```'
             ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit 1
           }
