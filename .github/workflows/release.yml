@@ -4,17 +4,30 @@ name: Release installer
 # Installed copies of the app read latest.json from the latest release and update themselves from these
 # assets, so keep the asset names unchanged.
 #
-# Release a new version by either:
-#   - running this workflow from the Actions tab (Run workflow). Leave the version empty and it is picked
-#     automatically (installer/next-version.ps1): same kind of bump as upstream FluentFlyout's version
-#     (2.16 -> 2.17 = minor), "feat:" / "!:" commits in this fork = minor / major, otherwise patch.
-#     Or type a version to use exactly that.
+# Runs by itself whenever master gets changes to the app (for example when the weekly "Sync upstream"
+# merges its pull request). The version is picked automatically (installer/next-version.ps1): same kind of
+# bump as upstream FluentFlyout's version (2.16 -> 2.17 = minor), "feat:" / "!:" commits in this fork =
+# minor / major, otherwise patch.
+#
+# Can also be started by hand:
+#   - Actions tab -> Run workflow (leave the version empty to pick it automatically, or type one)
 #   - or pushing a tag:   git tag v1.0.1 && git push origin v1.0.1
 
 on:
   push:
+    branches:
+      - master
     tags:
       - 'v*.*.*'
+    # Only changes to the app start a release (docs/workflow edits don't). Ignored for tag pushes.
+    # Keep in sync with $appPaths in sync-upstream.yml.
+    paths:
+      - 'FluentFlyoutWPF/**'
+      - 'FluentFlyout.SourceGenerators/**'
+      - 'FluentFlyoutMSIX/Package.appxmanifest'
+      - 'FluentFlyout.sln'
+      - 'installer/FluentFlyoutFree.iss'
+      - 'installer/build-installer.ps1'
   workflow_dispatch:
     inputs:
       version:
@@ -61,6 +74,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $isManual = '${{ github.event_name }}' -eq 'workflow_dispatch'
+          $isTag = '${{ github.ref_type }}' -eq 'tag' -and -not $isManual
 
           # latest published release (not a draft / pre-release)
           $latestTag = gh release view --json tagName --jq '.tagName' 2>&1 | Out-String
@@ -77,7 +91,8 @@ jobs:
           Write-Host "Latest release: $(if ($latestTag) { $latestTag } else { 'none' })"
           Write-Host "Automatic version: $($auto.Version) ($($auto.Bump): $($auto.Reason))"
 
-          $v = if ($isManual) { "$env:INPUT_VERSION" } else { '${{ github.ref_name }}' }
+          # typed version (Run workflow) or pushed tag; empty for automatic releases from master
+          $v = if ($isManual) { "$env:INPUT_VERSION" } elseif ($isTag) { '${{ github.ref_name }}' } else { '' }
           $v = $v.Trim().TrimStart('v')
           if ($v) {
             $reason = "version chosen manually"
@@ -91,7 +106,7 @@ jobs:
           if ($latestTag -and [version]$v -le [version]$latestTag.TrimStart('v')) {
             throw "v$v is not higher than the latest release $latestTag; installed apps would ignore it."
           }
-          if ($isManual) {
+          if (-not $isTag) {
             git ls-remote --exit-code --tags origin "refs/tags/v$v" | Out-Null
             if ($LASTEXITCODE -eq 0) { throw "Tag v$v already exists. Choose a higher version." }
           }

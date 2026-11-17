@@ -1,16 +1,17 @@
 name: Sync upstream
 
-# Every Monday: merge the original FluentFlyout (upstream) into the "upstream-sync" branch, check that it
-# still builds, and open (or update) a pull request. Then you:
-#   1. merge the pull request with "Create a merge commit"
-#   2. run Actions -> "Release installer" -> Run workflow (leave the version empty: it is picked automatically)
+# Every Monday, fully automatic: merge the original FluentFlyout (upstream) into the "upstream-sync" branch,
+# check that it builds, open a pull request and merge it into master. If the app changed, that merge starts
+# "Release installer", which publishes the new version, and installed apps update themselves.
 #
-# If something needs a human (merge conflicts, build errors), the run fails, GitHub emails you, and the
-# run's summary page explains what happened.
+# If something needs a human, the run fails, GitHub emails you, and the run's summary page explains what to do:
+#   - merge conflicts or build errors (nothing is changed in master)
+#   - upstream added premium/purchase code: the pull request stays open for you to check and merge by hand
+#     (the release still starts by itself after you merge)
 #
-# One-time setup (see installer/README.md): add the repository secret UPSTREAM_SYNC_TOKEN. Without it,
-# a sync fails whenever upstream changed its own workflow files, because GitHub doesn't allow the
-# built-in Actions token to push those.
+# One-time setup (see installer/README.md): the repository secret UPSTREAM_SYNC_TOKEN. It is needed to push
+# upstream's workflow changes and to merge the pull request in a way that starts the release workflow
+# (merges made with the built-in Actions token don't start other workflows).
 
 on:
   schedule:
@@ -49,8 +50,6 @@ jobs:
       - name: Check upstream for new commits
         id: check
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         run: |
           $ErrorActionPreference = 'Continue'
           git remote add upstream "https://github.com/$env:UPSTREAM_REPO.git"
@@ -58,21 +57,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not fetch $env:UPSTREAM_REPO" }
 
           $upstreamRef = "upstream/$env:UPSTREAM_BRANCH"
+          # anything upstream has that master doesn't. A pull request still waiting for review is simply
+          # rebuilt and checked again (and you get another reminder email).
           $newCommits = [int](git rev-list --count "HEAD..$upstreamRef")
           $run = $newCommits -gt 0
-
-          # skip only if an open pull request already has both the latest upstream and the latest base branch
-          # (if the branch is up to date but no pull request is open, run again so one gets opened)
-          if ($run -and (git rev-parse --verify --quiet "refs/remotes/origin/$env:SYNC_BRANCH")) {
-            git merge-base --is-ancestor $upstreamRef "origin/$env:SYNC_BRANCH"; $hasUpstream = $LASTEXITCODE -eq 0
-            git merge-base --is-ancestor HEAD "origin/$env:SYNC_BRANCH"; $hasBase = $LASTEXITCODE -eq 0
-            $openPr = gh pr list --head $env:SYNC_BRANCH --base $env:BASE_BRANCH --state open --json url --jq '.[0].url' 2>$null
-            if ($hasUpstream -and $hasBase -and $openPr) {
-              $run = $false
-              "### ⏳ [The open pull request]($openPr) already has the latest upstream changes" >> $env:GITHUB_STEP_SUMMARY
-              "Merge it to bring them into ``$env:BASE_BRANCH``." >> $env:GITHUB_STEP_SUMMARY
-            }
-          }
 
           if ($newCommits -eq 0) {
             "### ✅ Already up to date with $env:UPSTREAM_REPO" >> $env:GITHUB_STEP_SUMMARY
@@ -183,11 +171,12 @@ jobs:
           }
           exit 0
 
-      - name: Push branch and open pull request
+      - name: Push branch, open and merge pull request
         if: steps.check.outputs.run == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          HAS_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
           AUTO_RESOLVED: ${{ steps.merge.outputs.auto_resolved }}
         run: |
           $ErrorActionPreference = 'Continue'
@@ -214,30 +203,50 @@ jobs:
             exit 1
           }
 
-          # lines added by upstream that mention premium/licensing: worth a look before merging
+          # Lines upstream added that could bring back paid features or purchase prompts. These stop the
+          # automatic merge. Not counted: checks of IsPremiumUnlocked / IsStoreVersion (always "unlocked" and
+          # "not the Store version" in this fork) and translations. Code using the premium controls/classes this
+          # fork deleted doesn't get here: it fails the build step instead.
           $premiumFiles = @()
           $changedFiles = git diff --name-only $env:BASE_BRANCH HEAD -- FluentFlyoutWPF ':(exclude)FluentFlyoutWPF/Resources/Localization'
           foreach ($file in $changedFiles) {
-            $hits = git diff -U0 $env:BASE_BRANCH HEAD -- $file |
-              Select-String -Pattern '^\+(?!\+\+).*(Premium|LicenseManager|StoreContext|IsStoreVersion)'
-            if ($hits) { $premiumFiles += "- ``$file`` ($(@($hits).Count) line(s))" }
+            $hits = @(git diff -U0 $env:BASE_BRANCH HEAD -- $file | Where-Object {
+              $_ -match '^\+(?!\+\+)' -and
+              ($_ -replace '\b(IsPremiumUnlocked|IsStoreVersion)\b', '') -match 'Premium|LicenseManager|StoreContext|RequestPurchase'
+            })
+            if ($hits.Count -gt 0) { $premiumFiles += "- ``$file`` ($($hits.Count) line(s))" }
           }
+
+          # does this update change the app? (keep in sync with the "paths" of release.yml)
+          $appPaths = @(
+            'FluentFlyoutWPF', 'FluentFlyout.SourceGenerators', 'FluentFlyoutMSIX/Package.appxmanifest',
+            'FluentFlyout.sln', 'installer/FluentFlyoutFree.iss', 'installer/build-installer.ps1'
+          )
+          $appChanged = [bool](git diff --name-only $env:BASE_BRANCH HEAD -- @appPaths)
+
+          $hasToken = $env:HAS_SYNC_TOKEN -eq 'true'
+          $autoMerge = $hasToken -and $premiumFiles.Count -eq 0
 
           # shown inside a code block, so @names and #numbers in upstream's commit messages don't ping or link anyone
           $commits = git log --no-merges --format='%h %s' "$env:BASE_BRANCH..$upstreamRef" | Select-Object -First 40
           $commitCount = [int](git rev-list --no-merges --count "$env:BASE_BRANCH..$upstreamRef")
 
-          # the version "Release installer" will pick automatically after this PR is merged
-          $versionLine = $null
-          try {
-            $latestTag = (gh release view --json tagName --jq '.tagName' 2>&1 | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0) { $latestTag = '' }
-            $next = ./installer/next-version.ps1 -LatestTag $latestTag -UpstreamRef $upstreamRef
-            if ($next.Version -and $next.Bump -ne 'none') {
-              $versionLine = "- 📦 Releasing after merging will publish **v$($next.Version)** ($($next.Bump): $($next.Reason))"
+          # the version "Release installer" will publish after this PR is merged
+          $nextVersion = $null
+          $versionLine = "- 📦 Only files outside the app changed, so merging doesn't publish a new release"
+          if ($appChanged) {
+            $versionLine = "- 📦 Merging publishes a new release"
+            try {
+              $latestTag = (gh release view --json tagName --jq '.tagName' 2>&1 | Out-String).Trim()
+              if ($LASTEXITCODE -ne 0) { $latestTag = '' }
+              $next = ./installer/next-version.ps1 -LatestTag $latestTag -UpstreamRef $upstreamRef
+              if ($next.Version -and $next.Bump -ne 'none') {
+                $nextVersion = $next.Version
+                $versionLine = "- 📦 Merging publishes **v$($next.Version)** ($($next.Bump): $($next.Reason))"
+              }
+            } catch {
+              Write-Host "Could not predict the next version: $_"
             }
-          } catch {
-            Write-Host "Could not predict the next version: $_"
           }
 
           $body = @(
@@ -254,15 +263,23 @@ jobs:
             $body += @(
               ""
               "> [!WARNING]"
-              "> Upstream added code mentioning premium/licensing. Check that nothing gets locked or shows a purchase prompt:"
+              "> Upstream added code mentioning premium/purchases, so this pull request was **not merged automatically**."
+              "> Check that nothing gets locked or shows a purchase prompt:"
               ($premiumFiles | ForEach-Object { "> $_" })
+              ""
+              "When it looks fine, merge it with **Create a merge commit** (not *Squash* or *Rebase*: those make every"
+              "future sync conflict). The release starts by itself after merging."
             )
+          } elseif (-not $hasToken) {
+            $body += @(
+              ""
+              "Not merged automatically because the ``UPSTREAM_SYNC_TOKEN`` secret is missing (see ``installer/README.md``)."
+              "Merge it with **Create a merge commit**; the release starts by itself after merging."
+            )
+          } else {
+            $body += @("", "🤖 This pull request merges itself once it's open.")
           }
           $body += @(
-            ""
-            "### Next steps"
-            "1. Merge this pull request with **Create a merge commit** (not *Squash* or *Rebase*: those make every future sync conflict)."
-            "2. Go to **Actions → Release installer → Run workflow** and leave the version empty; it picks the version automatically."
             ""
             "<details><summary>$commitCount upstream commit(s)</summary>"
             ""
@@ -306,5 +323,58 @@ jobs:
             exit 1
           }
 
-          "## ✅ Pull request ready: $prUrl" >> $env:GITHUB_STEP_SUMMARY
+          # needs a human: leave the pull request open and fail the run, so GitHub emails you
+          if (-not $autoMerge) {
+            if ($premiumFiles.Count -gt 0) {
+              @(
+                "## 👀 Needs your review: $prUrl"
+                ""
+                "Upstream added code mentioning premium/purchases, so the pull request wasn't merged automatically:"
+                ""
+                $premiumFiles
+                ""
+                "Check that nothing gets locked or shows a purchase prompt, then merge it with **Create a merge commit**."
+                "The release starts by itself after merging."
+              ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            } else {
+              @(
+                "## 🔑 Pull request ready, but not merged automatically: $prUrl"
+                ""
+                "The ``UPSTREAM_SYNC_TOKEN`` secret is missing (see ``installer/README.md``). Merge the pull request"
+                "with **Create a merge commit**; the release starts by itself after merging."
+              ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
+            exit 1
+          }
+
+          # Merge it. This uses UPSTREAM_SYNC_TOKEN, so the push to master starts "Release installer"
+          # (a merge made with the built-in Actions token wouldn't). GitHub may need a moment after opening
+          # a pull request before it can be merged, so retry a few times.
+          $merged = $false
+          for ($attempt = 1; $attempt -le 5 -and -not $merged; $attempt++) {
+            $mergeOutput = gh pr merge $prUrl --merge 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) { $merged = $true; break }
+            Write-Host "Merge attempt $attempt failed: $mergeOutput"
+            Start-Sleep -Seconds 15
+          }
+          if (-not $merged) {
+            @(
+              "## ⚠️ Pull request ready, but merging it failed: $prUrl"
+              ""
+              "Merge it with **Create a merge commit**; the release starts by itself after merging. GitHub's answer:"
+              ""
+              '```'
+              $mergeOutput.Trim()
+              '```'
+            ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+
+          "## ✅ Merged into ``$env:BASE_BRANCH``: $prUrl" >> $env:GITHUB_STEP_SUMMARY
+          if ($appChanged) {
+            $what = if ($nextVersion) { "v$nextVersion" } else { "the new version" }
+            "**Release installer** is now publishing $what (see the Actions tab). Installed apps update themselves." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "Only files outside the app changed, so no new release." >> $env:GITHUB_STEP_SUMMARY
+          }
           exit 0
