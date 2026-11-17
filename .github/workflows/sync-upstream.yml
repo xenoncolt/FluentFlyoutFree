@@ -96,7 +96,8 @@ jobs:
           $autoResolved = @()
 
           if ($LASTEXITCODE -ne 0) {
-            # premium files this fork deleted on purpose: if upstream edited them, keep them deleted
+            # files this fork deleted on purpose (premium code, upstream-only workflows):
+            # if upstream edited them, keep them deleted
             $forkDeleted = @(
               'FluentFlyoutWPF/Classes/LicenseManager.cs',
               'FluentFlyoutWPF/Controls/PremiumPurchaseButton.xaml',
@@ -104,7 +105,10 @@ jobs:
               'FluentFlyoutWPF/Controls/PremiumUnlockedBanner.xaml',
               'FluentFlyoutWPF/Controls/PremiumUnlockedBanner.xaml.cs',
               'FluentFlyoutWPF/Controls/AccentBadge.xaml',
-              'FluentFlyoutWPF/Controls/AccentBadge.xaml.cs'
+              'FluentFlyoutWPF/Controls/AccentBadge.xaml.cs',
+              '.github/workflows/cla-assistant.yml',
+              '.github/workflows/notify-website.yml',
+              '.github/workflows/build-msix.yml'
             )
 
             $remaining = @()
@@ -219,7 +223,8 @@ jobs:
             if ($hits) { $premiumFiles += "- ``$file`` ($(@($hits).Count) line(s))" }
           }
 
-          $commits = git log --no-merges --format='- %h %s' "$env:BASE_BRANCH..$upstreamRef" | Select-Object -First 40
+          # shown inside a code block, so @names and #numbers in upstream's commit messages don't ping or link anyone
+          $commits = git log --no-merges --format='%h %s' "$env:BASE_BRANCH..$upstreamRef" | Select-Object -First 40
           $commitCount = [int](git rev-list --no-merges --count "$env:BASE_BRANCH..$upstreamRef")
 
           # the version "Release installer" will pick automatically after this PR is merged
@@ -261,8 +266,10 @@ jobs:
             ""
             "<details><summary>$commitCount upstream commit(s)</summary>"
             ""
-            $commits
-            $(if ($commitCount -gt 40) { "- …" })
+            '```text'
+            ($commits -replace '```', "'''")
+            $(if ($commitCount -gt 40) { "…" })
+            '```'
             ""
             "</details>"
           )
