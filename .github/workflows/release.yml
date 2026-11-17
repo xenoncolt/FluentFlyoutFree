@@ -36,7 +36,6 @@ on:
 
 permissions:
   contents: write
-  models: read # GitHub Models, used to write the "What's new" summary
 
 concurrency:
   group: release
@@ -131,21 +130,30 @@ jobs:
         shell: pwsh
         run: ./installer/build-installer.ps1 -Version ${{ steps.version.outputs.version }} -Arch x64,arm64
 
-      # Optional: a short, user-friendly "What's new" written by GitHub Models from the changes since the
-      # previous release. If it fails for any reason, the release still goes out, without this section.
-      - name: Write "What's new" with GitHub Models
+      # Optional: a short, user-friendly "What's new" written by an AI from the changes since the previous
+      # release. Needs the repository secret AI_API_KEY (by default a free Google Gemini API key; any
+      # OpenAI-compatible chat API works, see installer/README.md). Without the key, or if the AI fails,
+      # the release still goes out, without this section.
+      # (GitHub Models, used here before, was shut down by GitHub on 2026-07-30.)
+      - name: Write "What's new" with AI
         if: steps.version.outputs.previous_tag != ''
         continue-on-error: true
         shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          # optional repository variables (Settings -> Secrets and variables -> Actions -> Variables)
+          AI_ENDPOINT: ${{ vars.AI_ENDPOINT }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
           VERSION: ${{ steps.version.outputs.version }}
           PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
           REASON: ${{ steps.version.outputs.reason }}
-          # optional repository variable (Settings -> Secrets and variables -> Actions -> Variables)
-          MODEL_OVERRIDE: ${{ vars.RELEASE_NOTES_MODEL }}
         run: |
           $ErrorActionPreference = 'Continue'
+          if (-not $env:AI_API_KEY) {
+            Write-Host "No AI_API_KEY secret, so no What's new section (see installer/README.md)."
+            "No **What's new** section: add the ``AI_API_KEY`` secret to get one (see ``installer/README.md``)." >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
 
           # one line per change: commit subjects, and PR titles for "Merge pull request" commits
           $changes = [System.Collections.Generic.List[string]]::new()
@@ -180,13 +188,11 @@ jobs:
           '@
           $user = "Version $($env:VERSION) ($($env:REASON)). Changes since $($env:PREVIOUS_TAG):`n$changeList"
 
-          $models = @($env:MODEL_OVERRIDE, 'openai/gpt-5-mini', 'openai/gpt-4.1-mini', 'openai/gpt-4o-mini') |
-            Where-Object { $_ } | Select-Object -Unique
-          $headers = @{
-            Authorization          = "Bearer $env:GITHUB_TOKEN"
-            Accept                 = 'application/vnd.github+json'
-            'X-GitHub-Api-Version' = '2022-11-28'
-          }
+          # Default: Google Gemini (free tier) through its OpenAI-compatible endpoint. "gemini-flash-latest"
+          # always points to Google's current Flash model; the others are fallbacks.
+          $endpoint = if ($env:AI_ENDPOINT) { $env:AI_ENDPOINT } else { 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions' }
+          $models = if ($env:AI_MODEL) { @($env:AI_MODEL) } else { @('gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.5-flash-lite') }
+          $headers = @{ Authorization = "Bearer $env:AI_API_KEY" }
 
           foreach ($model in $models) {
             $body = @{
@@ -196,27 +202,39 @@ jobs:
                 @{ role = 'user'; content = $user }
               )
             } | ConvertTo-Json -Depth 5
+            # read the raw answer and parse it ourselves, so an unexpected answer is shown in the log
+            # instead of failing with an unclear error
+            $status = 0; $raw = ''
             try {
-              $response = Invoke-RestMethod -Method Post -Uri 'https://models.github.ai/inference/chat/completions' `
-                -Headers $headers -ContentType 'application/json; charset=utf-8' `
-                -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 90
-              $text = "$($response.choices[0].message.content)".Trim()
-              # drop the @ of any @username so the release never pings anyone
-              $text = $text -replace '(?<![\w.])@(?=[A-Za-z0-9])', ''
-              if ($text) {
-                if ($text.Length -gt 5000) { $text = $text.Substring(0, 5000) }
-                $text | Out-File (Join-Path $env:RUNNER_TEMP 'whats-new.md') -Encoding utf8
-                Write-Host "What's new written by $model"
-                "### What's new (written by $model)" >> $env:GITHUB_STEP_SUMMARY
-                $text >> $env:GITHUB_STEP_SUMMARY
-                exit 0
-              }
-              Write-Host "$model returned an empty answer"
+              $response = Invoke-WebRequest -Method Post -Uri $endpoint -Headers $headers -UseBasicParsing `
+                -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 120
+              $status = [int]$response.StatusCode
+              $raw = "$($response.Content)"
             } catch {
-              Write-Host "$model failed: $($_.Exception.Message) $($_.ErrorDetails.Message)"
+              if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+              $raw = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
             }
+            $text = ''
+            try {
+              $json = $raw | ConvertFrom-Json
+              if ($json.choices) { $text = "$($json.choices[0].message.content)".Trim() }
+            } catch { }
+            if ($status -ge 400 -or -not $text) {
+              $snippet = if ($raw.Length -gt 600) { $raw.Substring(0, 600) + '…' } else { $raw }
+              Write-Host "$model failed (HTTP $status): $snippet"
+              continue
+            }
+
+            # drop the @ of any @username so the release never pings anyone
+            $text = $text -replace '(?<![\w.])@(?=[A-Za-z0-9])', ''
+            if ($text.Length -gt 5000) { $text = $text.Substring(0, 5000) }
+            $text | Out-File (Join-Path $env:RUNNER_TEMP 'whats-new.md') -Encoding utf8
+            Write-Host "What's new written by $model"
+            "### What's new (written by $model)" >> $env:GITHUB_STEP_SUMMARY
+            $text >> $env:GITHUB_STEP_SUMMARY
+            exit 0
           }
-          Write-Host "::warning::Could not write the What's new section with GitHub Models; the release goes out without it."
+          Write-Host "::warning::Could not write the What's new section with AI (details above); the release goes out without it."
           exit 0
 
       - name: Publish GitHub release
