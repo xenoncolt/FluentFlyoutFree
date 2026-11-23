@@ -309,6 +309,12 @@ public partial class UserSettings : ObservableObject
     public partial string LastKnownVersion { get; set; }
 
     /// <summary>
+    /// Last app version whose changelog was successfully opened.
+    /// </summary>
+    [ObservableProperty]
+    public partial string LastViewedChangelogVersion { get; set; }
+
+    /// <summary>
     /// Show seekbar if the player supports it
     /// </summary>
     [ObservableProperty]
@@ -472,6 +478,12 @@ public partial class UserSettings : ObservableObject
     /// </summary>
     [ObservableProperty]
     public partial bool TaskbarWidgetShowPauseOverlay { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the media player's icon is shown on the taskbar widget album art.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool TaskbarWidgetShowMediaPlayerIcon { get; set; }
 
     /// <summary>
     /// Whether taskbar widget controls (pause, previous, next) are enabled.
@@ -792,6 +804,7 @@ public partial class UserSettings : ObservableObject
         LockKeysBoldUi = false;
         LockKeysMonitorPreference = 0;
         LastKnownVersion = string.Empty;
+        LastViewedChangelogVersion = string.Empty;
         SeekbarEnabled = false;
         PauseOtherSessionsEnabled = false;
         PinnedSessionId = string.Empty;
@@ -814,6 +827,7 @@ public partial class UserSettings : ObservableObject
         TaskbarWidgetHideCompletely = false;
         TaskbarWidgetFixedWidth = false;
         TaskbarWidgetShowPauseOverlay = true;
+        TaskbarWidgetShowMediaPlayerIcon = true;
         TaskbarWidgetControlsEnabled = false;
         TaskbarWidgetControlsPosition = 1;
         TaskbarWidgetAnimated = true;
@@ -971,6 +985,12 @@ public partial class UserSettings : ObservableObject
         UpdateTaskbar();
     }
 
+    partial void OnTaskbarWidgetAutoHideChanged(bool oldValue, bool newValue)
+    {
+        if (oldValue == newValue || _initializing) return;
+        UpdateTaskbar();
+    }
+
     partial void OnTaskbarWidgetHideCompletelyChanged(bool oldValue, bool newValue)
     {
         if (oldValue == newValue || _initializing) return;
@@ -984,6 +1004,12 @@ public partial class UserSettings : ObservableObject
     }
 
     partial void OnTaskbarWidgetShowPauseOverlayChanged(bool oldValue, bool newValue)
+    {
+        if (oldValue == newValue || _initializing) return;
+        UpdateTaskbar();
+    }
+
+    partial void OnTaskbarWidgetShowMediaPlayerIconChanged(bool oldValue, bool newValue)
     {
         if (oldValue == newValue || _initializing) return;
         UpdateTaskbar();
