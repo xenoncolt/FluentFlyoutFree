@@ -188,53 +188,21 @@ jobs:
           '@
           $user = "Version $($env:VERSION) ($($env:REASON)). Changes since $($env:PREVIOUS_TAG):`n$changeList"
 
-          # Default: Google Gemini (free tier) through its OpenAI-compatible endpoint. "gemini-flash-latest"
-          # always points to Google's current Flash model; the others are fallbacks.
-          $endpoint = if ($env:AI_ENDPOINT) { $env:AI_ENDPOINT } else { 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions' }
-          $models = if ($env:AI_MODEL) { @($env:AI_MODEL) } else { @('gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.5-flash-lite') }
-          $headers = @{ Authorization = "Bearer $env:AI_API_KEY" }
-
-          foreach ($model in $models) {
-            $body = @{
-              model    = $model
-              messages = @(
-                @{ role = 'system'; content = $system },
-                @{ role = 'user'; content = $user }
-              )
-            } | ConvertTo-Json -Depth 5
-            # read the raw answer and parse it ourselves, so an unexpected answer is shown in the log
-            # instead of failing with an unclear error
-            $status = 0; $raw = ''
-            try {
-              $response = Invoke-WebRequest -Method Post -Uri $endpoint -Headers $headers -UseBasicParsing `
-                -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 120
-              $status = [int]$response.StatusCode
-              $raw = "$($response.Content)"
-            } catch {
-              if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
-              $raw = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-            }
-            $text = ''
-            try {
-              $json = $raw | ConvertFrom-Json
-              if ($json.choices) { $text = "$($json.choices[0].message.content)".Trim() }
-            } catch { }
-            if ($status -ge 400 -or -not $text) {
-              $snippet = if ($raw.Length -gt 600) { $raw.Substring(0, 600) + '…' } else { $raw }
-              Write-Host "$model failed (HTTP $status): $snippet"
-              continue
-            }
-
-            # drop the @ of any @username so the release never pings anyone
-            $text = $text -replace '(?<![\w.])@(?=[A-Za-z0-9])', ''
-            if ($text.Length -gt 5000) { $text = $text.Substring(0, 5000) }
-            $text | Out-File (Join-Path $env:RUNNER_TEMP 'whats-new.md') -Encoding utf8
-            Write-Host "What's new written by $model"
-            "### What's new (written by $model)" >> $env:GITHUB_STEP_SUMMARY
-            $text >> $env:GITHUB_STEP_SUMMARY
+          . ./.github/scripts/ai.ps1
+          try {
+            $answer = Invoke-AiChat -System $system -Prompt $user
+          } catch {
+            Write-Host "::warning::Could not write the What's new section with AI: $($_.Exception.Message) (details above). The release goes out without it."
             exit 0
           }
-          Write-Host "::warning::Could not write the What's new section with AI (details above); the release goes out without it."
+
+          # drop the @ of any @username so the release never pings anyone
+          $text = $answer.Text -replace '(?<![\w.])@(?=[A-Za-z0-9])', ''
+          if ($text.Length -gt 5000) { $text = $text.Substring(0, 5000) }
+          $text | Out-File (Join-Path $env:RUNNER_TEMP 'whats-new.md') -Encoding utf8
+          Write-Host "What's new written by $($answer.Model)"
+          "### What's new (written by $($answer.Model))" >> $env:GITHUB_STEP_SUMMARY
+          $text >> $env:GITHUB_STEP_SUMMARY
           exit 0
 
       - name: Publish GitHub release

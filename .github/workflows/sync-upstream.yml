@@ -4,14 +4,18 @@ name: Sync upstream
 # check that it builds, open a pull request and merge it into master. If the app changed, that merge starts
 # "Release installer", which publishes the new version, and installed apps update themselves.
 #
-# If something needs a human, the run fails, GitHub emails you, and the run's summary page explains what to do:
-#   - merge conflicts or build errors (nothing is changed in master)
-#   - upstream added premium/purchase code: the pull request stays open for you to check and merge by hand
-#     (the release still starts by itself after you merge)
+# Problems are fixed by an AI (secret AI_API_KEY), guided by .github/scripts/fork-notes.md:
+#   - merge conflicts: resolved so both upstream's changes and this fork's changes are kept
+#   - build errors after the merge (usually upstream code using something this fork removed)
+#   - upstream code mentioning premium/purchases: checked, and changed if needed so everything stays free
+# Nothing is merged unless the app builds, and the pull request lists everything the AI changed.
 #
-# One-time setup (see installer/README.md): the repository secret UPSTREAM_SYNC_TOKEN. It is needed to push
-# upstream's workflow changes and to merge the pull request in a way that starts the release workflow
-# (merges made with the built-in Actions token don't start other workflows).
+# If something still needs a human (no AI key, or the AI failed), the run fails, GitHub emails you, and the
+# run's summary page explains what to do. master is only changed by a pull request that built successfully.
+#
+# One-time setup (see installer/README.md): the repository secrets UPSTREAM_SYNC_TOKEN and AI_API_KEY.
+# The token is needed to push upstream's workflow changes and to merge the pull request in a way that starts
+# the release workflow (merges made with the built-in Actions token don't start other workflows).
 
 on:
   schedule:
@@ -70,55 +74,107 @@ jobs:
           "new_commits=$newCommits" >> $env:GITHUB_OUTPUT
           exit 0
 
+      - name: Setup .NET
+        if: steps.check.outputs.run == 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # Conflicts in app code are resolved by the AI (secret AI_API_KEY, see installer/README.md), using this
+      # fork's notes in .github/scripts/fork-notes.md. Whatever it does is checked by the build below.
       - name: Merge upstream
         id: merge
         if: steps.check.outputs.run == 'true'
         shell: pwsh
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_ENDPOINT: ${{ vars.AI_ENDPOINT }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
         run: |
           $ErrorActionPreference = 'Continue'
+          . ./.github/scripts/ai-fix.ps1
+          $notes = Join-Path $env:RUNNER_TEMP 'sync-notes.md' # what was fixed automatically, for the pull request
+          $upstreamRef = "upstream/$env:UPSTREAM_BRANCH"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # conflicts also show the common ancestor, so the AI can see what each side changed
+          git config merge.conflictStyle diff3
           git checkout -B $env:SYNC_BRANCH
 
-          git merge "upstream/$env:UPSTREAM_BRANCH" --no-edit -m "Merge upstream $env:UPSTREAM_REPO"
-          $autoResolved = @()
-
+          git merge $upstreamRef --no-edit -m "Merge upstream $env:UPSTREAM_REPO"
           if ($LASTEXITCODE -ne 0) {
-            # files this fork deleted on purpose (premium code, upstream-only workflows):
-            # if upstream edited them, keep them deleted
-            $forkDeleted = @(
-              'FluentFlyoutWPF/Classes/LicenseManager.cs',
-              'FluentFlyoutWPF/Controls/PremiumPurchaseButton.xaml',
-              'FluentFlyoutWPF/Controls/PremiumPurchaseButton.xaml.cs',
-              'FluentFlyoutWPF/Controls/PremiumUnlockedBanner.xaml',
-              'FluentFlyoutWPF/Controls/PremiumUnlockedBanner.xaml.cs',
-              'FluentFlyoutWPF/Controls/AccentBadge.xaml',
-              'FluentFlyoutWPF/Controls/AccentBadge.xaml.cs',
-              '.github/workflows/cla-assistant.yml',
-              '.github/workflows/notify-website.yml',
-              '.github/workflows/build-msix.yml'
-            )
-
-            $remaining = @()
+            $aiFiles = @()
             foreach ($file in @(git diff --name-only --diff-filter=U)) {
-              if ($forkDeleted -contains $file) {
+              # stage 2 = this fork's version, stage 3 = upstream's; a missing stage means that side deleted the file
+              $stages = @(git ls-files -u -- $file | ForEach-Object { ($_ -split '\s+')[2] })
+              if ($stages -notcontains '2') {
+                # deleted in this fork on purpose (premium code, upstream-only workflows): keep it deleted
                 git rm --quiet -- $file
-                $autoResolved += $file
+                "- Kept deleted (this fork removed it, upstream edited it): ``$file``" >> $notes
+              } elseif ($stages -notcontains '3') {
+                # upstream deleted a file this fork changed: follow upstream (the build checks the result)
+                git rm --quiet -- $file
+                "- Deleted like upstream did (this fork had changed it): ``$file``" >> $notes
+              } elseif ($file -like '.github/*' -or $file -like '*.md') {
+                # this fork's own workflows and documents
+                git checkout --ours -- $file
+                git add -- $file
+                "- Kept this fork's version of ``$file``" >> $notes
+              } elseif (-not (Select-String -LiteralPath $file -Pattern '^<{7}' -Quiet)) {
+                # binary file (no conflict markers): take upstream's
+                git checkout --theirs -- $file
+                git add -- $file
+                "- Took upstream's version of ``$file``" >> $notes
               } else {
-                $remaining += $file
+                $aiFiles += $file
               }
             }
 
-            if ($remaining.Count -gt 0) {
+            $failed = @()
+            if ($aiFiles.Count -gt 0 -and -not (Test-AiConfigured)) {
+              $failed = @($aiFiles | ForEach-Object { "- ``$_``" })
+            } else {
+              foreach ($file in $aiFiles) {
+                Write-Host "Asking the AI to resolve the conflicts in $file"
+                try {
+                  $r = Resolve-ConflictsWithAi -Path $file -OursRef HEAD -TheirsRef $upstreamRef
+                  git add -- $file
+                  "- 🤖 AI resolved $($r.Count) conflict(s) in ``$file``$(if ($r.Summary) { ": $($r.Summary)" })" >> $notes
+                } catch {
+                  $failed += "- ``$file``: $($_.Exception.Message)"
+                }
+              }
+            }
+
+            if ($failed.Count -gt 0) {
               git merge --abort
+              $why = if (-not (Test-AiConfigured)) {
+                @(
+                  "Upstream and this fork changed the same lines in these files:"
+                  ""
+                  $failed
+                  ""
+                  "The sync can resolve this by itself with a free AI key: add the ``AI_API_KEY`` secret"
+                  "(see ``installer/README.md``), then **Actions → Sync upstream → Run workflow**."
+                )
+              } else {
+                @(
+                  "Upstream and this fork changed the same lines, and the AI couldn't resolve them this time:"
+                  ""
+                  $failed
+                  ""
+                  "The next weekly run tries again. To try now: **Actions → Sync upstream → Run workflow**."
+                )
+              }
               @(
                 "## ⚠️ Upstream changes conflict with this fork"
                 ""
-                "Upstream and this fork changed the same lines in these files, so they can't be merged automatically:"
+                $why
                 ""
-                ($remaining | ForEach-Object { "- ``$_``" })
+                "Nothing was changed in your repository."
                 ""
-                "Nothing was changed in your repository. To merge by hand on your PC:"
+                "<details><summary>Merging by hand instead</summary>"
                 ""
                 '```'
                 "git checkout $env:BASE_BRANCH"
@@ -127,8 +183,9 @@ jobs:
                 "git merge upstream/$env:UPSTREAM_BRANCH"
                 '```'
                 ""
-                "Fix the files listed above (or ask an assistant to), then ``git commit`` and ``git push``."
-                "To cancel a merge you started: ``git merge --abort``."
+                "Fix the conflicting files, then ``git commit`` and ``git push``. To cancel: ``git merge --abort``."
+                ""
+                "</details>"
               ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
               exit 1
             }
@@ -136,31 +193,63 @@ jobs:
             git commit --no-edit
             if ($LASTEXITCODE -ne 0) { throw "Could not commit the merge" }
           }
-
-          "auto_resolved=$($autoResolved -join ',')" >> $env:GITHUB_OUTPUT
           exit 0
 
-      - name: Setup .NET
-        if: steps.check.outputs.run == 'true'
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 10.0.x
-
+      # Build errors (usually upstream code using something this fork removed) are fixed by the AI, at most
+      # two rounds. Nothing is merged unless the app builds.
       - name: Build merged code
         if: steps.check.outputs.run == 'true'
         shell: pwsh
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_ENDPOINT: ${{ vars.AI_ENDPOINT }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
         run: |
           $ErrorActionPreference = 'Continue'
-          dotnet build FluentFlyoutWPF/FluentFlyout.csproj -c Release -p:Platform=x64 -nologo 2>&1 | Tee-Object -FilePath build.log
-          if ($LASTEXITCODE -ne 0) {
-            $errors = Select-String -Path build.log -Pattern ': error ' |
-              ForEach-Object { ($_.Line -replace '\s*\[[^\]]*\]$', '').Trim() } |
-              Sort-Object -Unique | Select-Object -First 20
+          . ./.github/scripts/ai-fix.ps1
+          $notes = Join-Path $env:RUNNER_TEMP 'sync-notes.md'
+          $log = Join-Path $env:RUNNER_TEMP 'build.log'
+
+          $ok = Invoke-AppBuild $log
+          $fixes = @()
+          $aiError = ''
+          for ($round = 1; -not $ok -and $round -le 2 -and (Test-AiConfigured); $round++) {
+            $errors = Get-BuildErrors (Get-Content $log)
+            Write-Host "Asking the AI to fix $($errors.Count) build error(s) (round $round)"
+            try {
+              $fixes += Repair-BuildWithAi -Errors $errors -BaseRef $env:BASE_BRANCH
+            } catch {
+              $aiError = $_.Exception.Message
+              Write-Host "The AI couldn't fix the build: $aiError"
+              break
+            }
+            $ok = Invoke-AppBuild $log
+          }
+
+          if ($ok -and $fixes.Count -gt 0) {
+            git add -u -- FluentFlyoutWPF FluentFlyout.SourceGenerators
+            git commit -m "Fix build after merging upstream (AI)"
+            if ($LASTEXITCODE -ne 0) { throw "Could not commit the build fix" }
+            foreach ($r in $fixes) {
+              $files = ($r.Files | ForEach-Object { "``$_``" }) -join ', '
+              "- 🔧 AI fixed build errors in ${files}$(if ($r.Summary) { ": $($r.Summary)" })" >> $notes
+            }
+          }
+
+          if (-not $ok) {
+            $all = Get-BuildErrors (Get-Content $log)
+            $errors = @($all | Select-Object -First 20 | ForEach-Object { $_.Text })
+            $what = if (-not (Test-AiConfigured)) {
+              "The sync can fix this by itself with a free AI key: add the ``AI_API_KEY`` secret (see ``installer/README.md``), then **Actions → Sync upstream → Run workflow**."
+            } else {
+              "The AI couldn't fix it this time$(if ($aiError) { " ($aiError)" }). The next weekly run tries again. To try now: **Actions → Sync upstream → Run workflow**."
+            }
             @(
               "## ❌ The merged code doesn't build"
               ""
-              "Upstream merged without conflicts, but the result has build errors. This usually means"
-              "upstream added code that uses something this fork removed (for example the premium/licence code)."
+              "This usually means upstream added code that uses something this fork removed (for example the premium/licence code)."
+              $what
+              ""
               "Nothing was changed in your repository."
               ""
               '```'
@@ -171,13 +260,63 @@ jobs:
           }
           exit 0
 
+      # Upstream code that could bring back paid features or purchase prompts. The AI checks it and, if needed,
+      # changes it so everything stays free. Without the AI (or if its change doesn't build) the pull request
+      # waits for your review instead of merging itself.
+      - name: Check for premium code
+        id: premium
+        if: steps.check.outputs.run == 'true'
+        shell: pwsh
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_ENDPOINT: ${{ vars.AI_ENDPOINT }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          . ./.github/scripts/ai-fix.ps1
+          $notes = Join-Path $env:RUNNER_TEMP 'sync-notes.md'
+          $held = Join-Path $env:RUNNER_TEMP 'premium-held.md'
+
+          $findings = Find-PremiumCode -BaseRef $env:BASE_BRANCH
+          $reviewed = $findings.Count -eq 0
+          if (-not $reviewed -and (Test-AiConfigured)) {
+            Write-Host "Asking the AI to check upstream's premium-related code in $($findings.Count) file(s)"
+            try {
+              $r = Invoke-PremiumReviewWithAi -Findings $findings -BaseRef $env:BASE_BRANCH
+              if (-not $r.Changed) {
+                "- 🆓 AI checked upstream's premium-related code: $($r.Summary)" >> $notes
+                $reviewed = $true
+              } elseif (Invoke-AppBuild (Join-Path $env:RUNNER_TEMP 'build-premium.log')) {
+                git add -u -- FluentFlyoutWPF FluentFlyout.SourceGenerators
+                git commit -m "Keep every feature free after merging upstream (AI)"
+                if ($LASTEXITCODE -ne 0) { throw "Could not commit the change" }
+                $files = ($r.Files | ForEach-Object { "``$_``" }) -join ', '
+                "- 🆓 AI changed upstream's premium-related code in ${files}: $($r.Summary)" >> $notes
+                $reviewed = $true
+              } else {
+                Write-Host "The AI's change doesn't build; undoing it"
+                git checkout -- .
+              }
+            } catch {
+              Write-Host "The AI couldn't check the premium code: $($_.Exception.Message)"
+              git checkout -- .
+            }
+          }
+
+          if (-not $reviewed) {
+            $findings | ForEach-Object { "- ``$($_.Path)`` ($($_.Count) line(s))" } | Out-File $held -Encoding utf8
+          }
+          "held=$((-not $reviewed).ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          exit 0
+
       - name: Push branch, open and merge pull request
         if: steps.check.outputs.run == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
           HAS_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
-          AUTO_RESOLVED: ${{ steps.merge.outputs.auto_resolved }}
+          PREMIUM_HELD: ${{ steps.premium.outputs.held }}
+          AI_KEY_SET: ${{ secrets.AI_API_KEY != '' && 'true' || '' }}
         run: |
           $ErrorActionPreference = 'Continue'
           $upstreamRef = "upstream/$env:UPSTREAM_BRANCH"
@@ -203,18 +342,16 @@ jobs:
             exit 1
           }
 
-          # Lines upstream added that could bring back paid features or purchase prompts. These stop the
-          # automatic merge. Not counted: checks of IsPremiumUnlocked / IsStoreVersion (always "unlocked" and
-          # "not the Store version" in this fork) and translations. Code using the premium controls/classes this
-          # fork deleted doesn't get here: it fails the build step instead.
+          # premium-related code the "Check for premium code" step couldn't clear automatically
           $premiumFiles = @()
-          $changedFiles = git diff --name-only $env:BASE_BRANCH HEAD -- FluentFlyoutWPF ':(exclude)FluentFlyoutWPF/Resources/Localization'
-          foreach ($file in $changedFiles) {
-            $hits = @(git diff -U0 $env:BASE_BRANCH HEAD -- $file | Where-Object {
-              $_ -match '^\+(?!\+\+)' -and
-              ($_ -replace '\b(IsPremiumUnlocked|IsStoreVersion)\b', '') -match 'Premium|LicenseManager|StoreContext|RequestPurchase'
-            })
-            if ($hits.Count -gt 0) { $premiumFiles += "- ``$file`` ($($hits.Count) line(s))" }
+          $heldFile = Join-Path $env:RUNNER_TEMP 'premium-held.md'
+          if ($env:PREMIUM_HELD -eq 'true' -and (Test-Path $heldFile)) { $premiumFiles = @(Get-Content $heldFile -Encoding utf8 | Where-Object { $_ }) }
+
+          # what was fixed automatically (conflicts, build errors, premium code); no @ so nobody gets pinged
+          $notesFile = Join-Path $env:RUNNER_TEMP 'sync-notes.md'
+          $fixNotes = @()
+          if (Test-Path $notesFile) {
+            $fixNotes = @(Get-Content $notesFile -Encoding utf8 | Where-Object { $_ } | ForEach-Object { '  ' + ($_ -replace '(?<![\w.])@(?=[A-Za-z0-9])', '') })
           }
 
           # does this update change the app? (keep in sync with the "paths" of release.yml)
@@ -252,18 +389,21 @@ jobs:
           $body = @(
             "Automated merge of the latest changes from [$env:UPSTREAM_REPO](https://github.com/$env:UPSTREAM_REPO) (``$upstreamSha``)."
             ""
-            "- ✅ Merged without conflicts"
-            "- ✅ Builds successfully"
           )
-          if ($versionLine) { $body += $versionLine }
-          if ($env:AUTO_RESOLVED) {
-            $body += "- ℹ️ Upstream edited premium files this fork removed; they were kept removed: $($env:AUTO_RESOLVED -replace ',', ', ')"
+          if ($fixNotes.Count -gt 0) {
+            $body += "- ✅ Merged; fixed automatically:"
+            $body += $fixNotes
+          } else {
+            $body += "- ✅ Merged without conflicts"
           }
+          $body += "- ✅ Builds successfully"
+          if ($versionLine) { $body += $versionLine }
           if ($premiumFiles.Count -gt 0) {
             $body += @(
               ""
               "> [!WARNING]"
-              "> Upstream added code mentioning premium/purchases, so this pull request was **not merged automatically**."
+              "> Upstream added code mentioning premium/purchases and it couldn't be checked automatically"
+              "> (no ``AI_API_KEY`` secret, or the AI failed), so this pull request was **not merged automatically**."
               "> Check that nothing gets locked or shows a purchase prompt:"
               ($premiumFiles | ForEach-Object { "> $_" })
               ""
@@ -329,12 +469,19 @@ jobs:
               @(
                 "## 👀 Needs your review: $prUrl"
                 ""
-                "Upstream added code mentioning premium/purchases, so the pull request wasn't merged automatically:"
+                "Upstream added code mentioning premium/purchases and it couldn't be checked automatically, so the"
+                "pull request wasn't merged:"
                 ""
                 $premiumFiles
                 ""
                 "Check that nothing gets locked or shows a purchase prompt, then merge it with **Create a merge commit**."
                 "The release starts by itself after merging."
+                ""
+                $(if (-not $env:AI_KEY_SET) {
+                  "With the free ``AI_API_KEY`` secret (see ``installer/README.md``) the sync checks this by itself."
+                } else {
+                  "The AI couldn't check it this time; the next weekly run tries again."
+                })
               ) | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             } else {
               @(
@@ -376,5 +523,9 @@ jobs:
             "**Release installer** is now publishing $what (see the Actions tab). Installed apps update themselves." >> $env:GITHUB_STEP_SUMMARY
           } else {
             "Only files outside the app changed, so no new release." >> $env:GITHUB_STEP_SUMMARY
+          }
+          if ($fixNotes.Count -gt 0) {
+            @("", "Fixed automatically:", "", ($fixNotes | ForEach-Object { $_.TrimStart() })) |
+              Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           }
           exit 0
