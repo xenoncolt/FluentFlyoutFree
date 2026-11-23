@@ -75,6 +75,8 @@ hides repeat, shuffle and player info</System:String>
     <System:String x:Key="TaskbarWidgetAutoHideDescription">Hides the widget automatically when media is paused</System:String>
     <System:String x:Key="TaskbarWidgetShowPauseOverlayTitle">Show Pause Icon Overlay</System:String>
     <System:String x:Key="TaskbarWidgetShowPauseOverlayDescription">When media is paused, display a pause icon over the album art</System:String>
+    <System:String x:Key="TaskbarWidgetShowMediaPlayerIconTitle">Show Media Player Icon</System:String>
+    <System:String x:Key="TaskbarWidgetShowMediaPlayerIconDescription">Show the media player's icon at the bottom-right of the album art</System:String>
     <System:String x:Key="TaskbarWidgetControlsTitle">Widget Media Controls</System:String>
     <System:String x:Key="TaskbarWidgetControlsDescription">Show media control buttons on the widget</System:String>
     <System:String x:Key="TaskbarWidgetControlsPositionTitle">Media Controls Position</System:String>
@@ -246,6 +248,11 @@ You can help contribute translations on</System:String>
     <System:String x:Key="UpdateToastTitle">FluentFlyout has been updated!</System:String>
     <System:String x:Key="UpdateToastMessage">You are now on {0}.</System:String>
     <System:String x:Key="UpdateToastButton">View Updates</System:String>
+    <System:String x:Key="ChangelogWindowTitle">What’s new</System:String>
+    <System:String x:Key="ChangelogAllUpdatesTitle">All updates</System:String>
+    <System:String x:Key="ChangelogLoadFailedText">The changelog could not be loaded. Check your connection and try again.</System:String>
+    <System:String x:Key="ChangelogOpenOnlineButton">Open changelog online</System:String>
+    <System:String x:Key="ChangelogViewAllUpdatesButton">View all updates</System:String>
     <System:String x:Key="SearchSettings">Search settings</System:String>
     <System:String x:Key="UpdateAvailable">Update available</System:String>
     <System:String x:Key="UpToDate">Up to date</System:String>

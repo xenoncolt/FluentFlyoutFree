@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Windows.Media.Control;
@@ -732,7 +733,7 @@ on_error:
         return new Rect(Canvas.GetLeft(TaskbarVisualizer) * dpiScale, Canvas.GetTop(TaskbarVisualizer) * dpiScale, rectW, rectH);
     }
 
-    public void UpdateUi(string title, string artist, BitmapImage? icon, GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus, GlobalSystemMediaTransportControlsSessionPlaybackControls? playbackControls = null)
+    public void UpdateUi(string title, string artist, BitmapImage? icon, GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus, GlobalSystemMediaTransportControlsSessionPlaybackControls? playbackControls = null, ImageSource? mediaPlayerIcon = null)
     {
         if (!SettingsManager.Current.TaskbarWidgetEnabled)
         {
@@ -749,22 +750,25 @@ on_error:
         // Autohide - Widget hides when playback is paused
         _lastPlaybackStatus = playbackStatus;
 
+        bool hideWhilePaused = SettingsManager.Current.TaskbarWidgetAutoHide
+            && playbackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+
         if ((SettingsManager.Current.TaskbarWidgetAutoHide))
         {
-            if (playbackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+            // Media events arrive on arbitrary threads. A DispatcherTimer is bound to the dispatcher of the thread
+            // that creates it, so one created on a thread without a message loop never ticks and, being kept in
+            // _autoHideTimer, blocks every later hide timer. Keep all of this on the UI thread.
+            Dispatcher.Invoke(() =>
             {
-                _autoHideTimer?.Stop();
-                _autoHideTimer = null;
-
-                Dispatcher.Invoke(() =>
+                if (playbackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
                 {
+                    _autoHideTimer?.Stop();
+                    _autoHideTimer = null;
+
                     Visibility = Visibility.Visible;
-                });
-            }
-            else
-            {
-                // Start delayed hide
-                if (_autoHideTimer == null)
+                }
+                // Start delayed hide (not needed if the widget is already hidden)
+                else if (_autoHideTimer == null && Visibility == Visibility.Visible)
                 {
                     var localTimer = new DispatcherTimer
                     {
@@ -779,32 +783,34 @@ on_error:
 
                         if (_lastPlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
                         {
-                            Dispatcher.Invoke(() =>
-                            {
-                                Visibility = Visibility.Collapsed;
-                            });
+                            Visibility = Visibility.Collapsed;
                         }
                     };
 
                     _autoHideTimer = localTimer;
                     localTimer.Start();
                 }
-            }
+            });
         }
 
         if (!_timer.IsEnabled)
             _timer.Start();
 
         // Delegate UI update to widget control
-        Widget.UpdateUi(title, artist, icon, playbackStatus, playbackControls);
+        Widget.UpdateUi(title, artist, icon, playbackStatus, playbackControls, mediaPlayerIcon);
 
         // Update position after UI change
         Dispatcher.BeginInvoke(() => UpdatePosition(), DispatcherPriority.Background);
 
-        Dispatcher.Invoke(() =>
+        // Don't re-show a widget that auto-hide has hidden: updates for paused/closed sessions
+        // (e.g. another, filtered-out app being paused) must not make it flash up again
+        if (!hideWhilePaused)
         {
-            Visibility = Visibility.Visible;
-        });
+            Dispatcher.Invoke(() =>
+            {
+                Visibility = Visibility.Visible;
+            });
+        }
     }
 
     public void RefreshAppVolumeTooltip()
